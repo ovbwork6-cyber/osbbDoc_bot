@@ -194,30 +194,59 @@ async def finish_work(callback: CallbackQuery):
 async def show_table(message: types.Message):
     is_archive = "Архів" in message.text
     status_filter = "status = 'Завершено'" if is_archive else "status != 'Завершено'"
-    title = "📂 **АРХІВ АКТІВ**" if is_archive else "📋 **ПОТОЧНІ АКТИ**"
-
+    
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
-    # Бухгалтер бачить тільки свої ОСББ, Голова - всі
+    
     if message.from_user.id == CHAIRMAN_ID:
-        c.execute(f"SELECT number, osbb, status FROM acts WHERE {status_filter} ORDER BY id DESC")
+        c.execute(f"SELECT id, number, osbb, status FROM acts WHERE {status_filter} ORDER BY id DESC")
     else:
         allowed = ACCESS_MAP.get(message.from_user.id, [])
         placeholders = ','.join(['?'] * len(allowed))
-        c.execute(f"SELECT number, osbb, status FROM acts WHERE {status_filter} AND osbb IN ({placeholders}) ORDER BY id DESC", allowed)
+        c.execute(f"SELECT id, number, osbb, status FROM acts WHERE {status_filter} AND osbb IN ({placeholders}) ORDER BY id DESC", allowed)
     
     rows = c.fetchall()
     conn.close()
 
     if not rows:
-        return await message.answer(f"{title}\n\nПорожньо.")
+        return await message.answer("📭 Список порожній.")
 
-    response = f"{title}\n\n"
-    for num, osbb, status in rows:
-        response += f"🔹 **№{num}** ({osbb}) — _{status}_\n"
+    await message.answer(f"<b>{'📂 Архів' if is_archive else '📋 Поточні акти'}:</b>", parse_mode="HTML")
+
+    for db_id, num, osbb, status in rows:
+        kb = None
+        # Якщо це Голова і це поточні акти — додаємо кнопку видалення
+        if message.from_user.id == CHAIRMAN_ID and not is_archive:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🗑 Видалити", callback_data=f"del_{db_id}")
+            ]])
+        
+        await message.answer(
+            f"🔹 <b>№{num}</b> ({osbb})\nСтатус: <i>{status}</i>", 
+            parse_mode="HTML", 
+            reply_markup=kb
+        )
+
+# Обробник кнопки видалення
+@dp.callback_query(F.data.startswith("del_"), F.from_user.id == CHAIRMAN_ID)
+async def delete_act(callback: types.CallbackQuery):
+    db_id = callback.data.split("_")[1]
     
-    await message.answer(response, parse_mode="Markdown")
-
+    conn = sqlite3.connect('osbb_acts.db')
+    c = conn.cursor()
+    # Отримуємо номер для сповіщення перед видаленням
+    c.execute("SELECT number FROM acts WHERE id=?", (db_id,))
+    res = c.fetchone()
+    
+    if res:
+        act_num = res[0]
+        c.execute("DELETE FROM acts WHERE id=?", (db_id,))
+        conn.commit()
+        await callback.answer(f"❌ Акт №{act_num} видалено", show_alert=True)
+        await callback.message.delete() # Видаляємо повідомлення зі списком
+    
+    conn.close()
+  
 async def main():
     init_db()
     await dp.start_polling(bot)
