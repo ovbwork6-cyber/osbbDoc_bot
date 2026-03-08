@@ -70,6 +70,7 @@ class ActForm(StatesGroup):
 
 class DocForm(StatesGroup):
     name = State()
+    osbb = State() # Новий стан
     file = State()
 
 # 4. ОБРОБКА /START
@@ -194,31 +195,39 @@ async def list_docs(message: types.Message):
     if message.from_user.id == CHAIRMAN_ID:
         kb_list.append([InlineKeyboardButton(text="➕ Додати ще", callback_data="add_doc")])
     
-    await message.answer("🗄 Документи ОСББ (Статути, Протоколи):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
+    await message.answer("🗄 Чеки ОСББ:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
 
 @dp.callback_query(F.data == "add_doc", F.from_user.id == CHAIRMAN_ID)
 async def start_add_doc(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("📝 Введіть назву документа (напр. Статут ВП-16):")
+    await callback.message.answer("📝 Введіть назву чека (напр. Оплата за лампи):")
     await state.set_state(DocForm.name)
     await callback.answer()
 
 @dp.message(DocForm.name)
 async def process_doc_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("📎 Тепер надішліть PDF-файл документа:")
+    await message.answer("🏢 Вкажіть ОСББ (ВП-16, Е21, ОКПТ, В19):")
+    await state.set_state(DocForm.osbb)
+
+@dp.message(DocForm.osbb)
+async def process_doc_osbb(message: types.Message, state: FSMContext):
+    await state.update_data(osbb=message.text.strip())
+    await message.answer("📎 Тепер надішліть фото або PDF чека:")
     await state.set_state(DocForm.file)
 
-@dp.message(DocForm.file, F.document)
+@dp.message(DocForm.file, F.photo | F.document)
 async def process_doc_file(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    f_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
-    c.execute("INSERT INTO docs (name, file_id) VALUES (?, ?)", (data['name'], message.document.file_id))
+    c.execute("INSERT INTO docs (name, osbb, file_id) VALUES (?, ?, ?)", 
+              (data['name'], data['osbb'], f_id))
     conn.commit()
     conn.close()
     await state.clear()
-    await message.answer(f"✅ Документ '{data['name']}' збережено!")
-
+    await message.answer(f"✅ Чек '{data['name']}' для {data['osbb']} збережено!")
 # 8. ОБРОБНИКИ CALLBACK КНОПОК
 @dp.callback_query(F.data.startswith("view_"))
 async def view_act_file(callback: CallbackQuery):
