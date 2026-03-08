@@ -58,7 +58,7 @@ def init_db():
 def get_main_menu():
     buttons = [
         [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів")],
-        [KeyboardButton(text="📁 Документи ОСББ")]
+        [KeyboardButton(text="📁 Чеки ОСББ")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
@@ -172,8 +172,8 @@ async def show_table(message: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[btns]) if btns else None
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# 7. ЗАГАЛЬНІ ДОКУМЕНТИ (СХОВИЩЕ)
-@dp.message(F.text == "📁 Документи ОСББ")
+# 7. ЩОМІСЯЧНІ ЧЕКИ (СХОВИЩЕ)
+@dp.message(F.text == "📁 Чеки ОСББ")
 async def list_docs(message: types.Message):
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
