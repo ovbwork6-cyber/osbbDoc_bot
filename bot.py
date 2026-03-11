@@ -133,16 +133,28 @@ async def process_file(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Акт №{data['number']} збережено!")
     await state.clear()
 
+    # Сповіщення бухгалтера
     for acc_id, allowed_osbb in ACCESS_MAP.items():
         if data['osbb'] in allowed_osbb:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Отримано", callback_data=f"rec_{db_id}")]])
             caption = f"📄 Акт №{data['number']}\n🏢 ОСББ: {data['osbb']}\nℹ️ Опис: {data['descr']}"
+            
             try:
-                if file_id:
-                    await bot.send_document(acc_id, file_id, caption=caption, reply_markup=kb)
-                else:
+                if not file_id:
+                    # Якщо файлу немає — шлемо текст
                     await bot.send_message(acc_id, caption, reply_markup=kb)
-            except Exception as e: print(f"Error sending to accountant: {e}")
+                else:
+                    # Перевіряємо, чи це фото (зазвичай фото приходять як список, але ми зберігали file_id)
+                    # Найнадійніший спосіб — спробувати відправити як документ, 
+                    # але Telegram краще "їсть" фото через send_photo
+                    try:
+                        # Спробуємо відправити як документ (універсально для PDF та файлів)
+                        await bot.send_document(acc_id, file_id, caption=caption, reply_markup=kb)
+                    except:
+                        # Якщо не пішло як документ (напр. це чисте фото), шлемо як фото
+                        await bot.send_photo(acc_id, file_id, caption=caption, reply_markup=kb)
+            except Exception as e: 
+                print(f"Error sending to accountant {acc_id}: {e}")
 
 # 6. ТАБЛИЦІ (ПОТОЧНІ ТА АРХІВ)
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів"]))
@@ -260,10 +272,18 @@ async def view_act_file(callback: CallbackQuery):
     c.execute("SELECT file_id FROM acts WHERE id=?", (db_id,))
     res = c.fetchone()
     conn.close()
+    
     if res and res[0]:
-        await callback.message.answer_document(res[0])
+        file_id = res[0]
+        try:
+            # Спочатку пробуємо відправити як документ (для PDF)
+            await callback.message.answer_document(file_id)
+        except:
+            # Якщо це фото, відправляємо як фото
+            await callback.message.answer_photo(file_id)
         await callback.answer()
-    else: await callback.answer("Файл відсутній", show_alert=True)
+    else: 
+        await callback.answer("Файл відсутній", show_alert=True)
 
 @dp.callback_query(F.data.startswith("getdoc_"))
 async def get_general_doc(callback: CallbackQuery):
