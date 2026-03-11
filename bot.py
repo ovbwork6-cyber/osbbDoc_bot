@@ -31,7 +31,6 @@ dp = Dispatcher()
 def init_db():
     conn = sqlite3.connect('osbb_acts.db')
     cursor = conn.cursor()
-    # Оновлена таблиця актів (додано file_id)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS acts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,11 +42,11 @@ def init_db():
             history TEXT
         )
     ''')
-    # Таблиця для загальних документів ОСББ
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS docs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
+            osbb TEXT,
             file_id TEXT
         )
     ''')
@@ -70,16 +69,17 @@ class ActForm(StatesGroup):
 
 class DocForm(StatesGroup):
     name = State()
-    osbb = State() # Новий стан
+    osbb = State()
     file = State()
 
 # 4. ОБРОБКА /START
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear() # Скидаємо стани при старті
     if message.from_user.id == CHAIRMAN_ID or message.from_user.id in ACCOUNTANTS:
         await message.answer("👋 Бот ОСББ готовий. Оберіть дію:", reply_markup=get_main_menu())
 
-# 5. СТВОРЕННЯ АКТУ (З ПІДТРИМКОЮ PDF/ФОТО)
+# 5. СТВОРЕННЯ АКТУ
 @dp.message(Command("new_act"), F.from_user.id == CHAIRMAN_ID)
 async def start_new_act(message: types.Message, state: FSMContext):
     await message.answer("📝 Введіть номер акту (наприклад, 45-А):")
@@ -100,17 +100,24 @@ async def process_osbb(message: types.Message, state: FSMContext):
 @dp.message(ActForm.descr)
 async def process_descr(message: types.Message, state: FSMContext):
     await state.update_data(descr=message.text)
-    await message.answer("📎 Надішліть ФОТО або PDF-файл акту (або натисніть /skip):")
+    await message.answer("📎 Надішліть ФОТО або PDF-файл акту (або написніть /skip):")
     await state.set_state(ActForm.file)
 
-@dp.message(ActForm.file, F.photo | F.document | Command("skip"))
+# ВИПРАВЛЕНИЙ ОБРОБНИК ФАЙЛІВ (без помилки TypeError)
+@dp.message(ActForm.file)
 async def process_file(message: types.Message, state: FSMContext):
     file_id = None
-    if message.photo:
+    
+    if message.text == "/skip":
+        file_id = None
+    elif message.photo:
         file_id = message.photo[-1].file_id
     elif message.document:
         file_id = message.document.file_id
-    
+    else:
+        await message.answer("⚠ Будь ласка, надішліть фото, PDF або натисніть /skip")
+        return
+
     data = await state.get_data()
     now = datetime.now().strftime("%d.%m %H:%M")
     history_entry = f"🆕 {now} - Створено."
@@ -126,7 +133,6 @@ async def process_file(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Акт №{data['number']} збережено!")
     await state.clear()
 
-    # Сповіщення бухгалтера
     for acc_id, allowed_osbb in ACCESS_MAP.items():
         if data['osbb'] in allowed_osbb:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Отримано", callback_data=f"rec_{db_id}")]])
@@ -136,7 +142,7 @@ async def process_file(message: types.Message, state: FSMContext):
                     await bot.send_document(acc_id, file_id, caption=caption, reply_markup=kb)
                 else:
                     await bot.send_message(acc_id, caption, reply_markup=kb)
-            except Exception as e: print(f"Error: {e}")
+            except Exception as e: print(f"Error sending to accountant: {e}")
 
 # 6. ТАБЛИЦІ (ПОТОЧНІ ТА АРХІВ)
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів"]))
@@ -173,29 +179,38 @@ async def show_table(message: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[btns]) if btns else None
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# 7. ЩОМІСЯЧНІ ЧЕКИ (СХОВИЩЕ)
+# 7. ЧЕКИ ОСББ (РОЗДІЛЕНИЙ ДОСТУП)
 @dp.message(F.text == "📁 Чеки ОСББ")
 async def list_docs(message: types.Message):
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
-    c.execute("SELECT id, name FROM docs")
+    uid = message.from_user.id
+    
+    if uid == CHAIRMAN_ID:
+        c.execute("SELECT id, name, osbb FROM docs ORDER BY id DESC")
+    else:
+        allowed = ACCESS_MAP.get(uid, [])
+        placeholders = ','.join(['?'] * len(allowed))
+        c.execute(f"SELECT id, name, osbb FROM docs WHERE osbb IN ({placeholders}) ORDER BY id DESC", allowed)
+    
     rows = c.fetchall()
     conn.close()
 
     if not rows:
         kb = None
-        if message.from_user.id == CHAIRMAN_ID:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Додати документ", callback_data="add_doc")]])
-        return await message.answer("🗄 Сховище документів порожнє.", reply_markup=kb)
+        if uid == CHAIRMAN_ID:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Додати чек", callback_data="add_doc")]])
+        return await message.answer("🗄 Сховище чеків порожнє.", reply_markup=kb)
 
     kb_list = []
-    for d_id, name in rows:
-        kb_list.append([InlineKeyboardButton(text=f"📥 {name}", callback_data=f"getdoc_{d_id}")])
+    for d_id, name, osbb in rows:
+        label = f"📥 {name} ({osbb})" if uid == CHAIRMAN_ID else f"📥 {name}"
+        kb_list.append([InlineKeyboardButton(text=label, callback_data=f"getdoc_{d_id}")])
     
-    if message.from_user.id == CHAIRMAN_ID:
+    if uid == CHAIRMAN_ID:
         kb_list.append([InlineKeyboardButton(text="➕ Додати ще", callback_data="add_doc")])
     
-    await message.answer("🗄 Чеки ОСББ:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
+    await message.answer("🗄 Доступні чеки ОСББ:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
 
 @dp.callback_query(F.data == "add_doc", F.from_user.id == CHAIRMAN_ID)
 async def start_add_doc(callback: CallbackQuery, state: FSMContext):
@@ -215,11 +230,18 @@ async def process_doc_osbb(message: types.Message, state: FSMContext):
     await message.answer("📎 Тепер надішліть фото або PDF чека:")
     await state.set_state(DocForm.file)
 
-@dp.message(DocForm.file, F.photo | F.document)
+@dp.message(DocForm.file)
 async def process_doc_file(message: types.Message, state: FSMContext):
+    f_id = None
+    if message.photo:
+        f_id = message.photo[-1].file_id
+    elif message.document:
+        f_id = message.document.file_id
+    else:
+        await message.answer("⚠ Будь ласка, надішліть фото або PDF-файл")
+        return
+
     data = await state.get_data()
-    f_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
     c.execute("INSERT INTO docs (name, osbb, file_id) VALUES (?, ?, ?)", 
@@ -228,7 +250,8 @@ async def process_doc_file(message: types.Message, state: FSMContext):
     conn.close()
     await state.clear()
     await message.answer(f"✅ Чек '{data['name']}' для {data['osbb']} збережено!")
-# 8. ОБРОБНИКИ CALLBACK КНОПОК
+
+# 8. ОБРОБНИКИ КНОПОК
 @dp.callback_query(F.data.startswith("view_"))
 async def view_act_file(callback: CallbackQuery):
     db_id = callback.data.split("_")[1]
@@ -264,7 +287,6 @@ async def delete_act(callback: CallbackQuery):
     await callback.answer("Видалено", show_alert=True)
     await callback.message.delete()
 
-# ЛОГІКА БУХГАЛТЕРА (REC, PAID, FINISH) - залиште аналогічно вашому коду, але з id з бази
 @dp.callback_query(F.data.startswith("rec_"))
 async def acc_rec(callback: CallbackQuery):
     db_id = callback.data.split("_")[1]
@@ -286,7 +308,7 @@ async def acc_paid(callback: CallbackQuery):
     conn.close()
     await callback.message.edit_caption(caption=callback.message.caption + "\n💰 ОПЛАЧЕНО", reply_markup=None)
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏁 Завершити", callback_data=f"finish_{db_id}")]])
-    await bot.send_message(CHAIRMAN_ID, f"💰 Акт в базі (ID {db_id}) оплачено. Закрити?", reply_markup=kb)
+    await bot.send_message(CHAIRMAN_ID, f"💰 Акт (ID {db_id}) оплачено. Закрити?", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("finish_"))
 async def finish_act(callback: CallbackQuery):
@@ -296,7 +318,7 @@ async def finish_act(callback: CallbackQuery):
     c.execute("UPDATE acts SET status='Завершено' WHERE id=?", (db_id,))
     conn.commit()
     conn.close()
-    await callback.message.edit_text("🏁 Справу закрито та перенесено в архів.")
+    await callback.message.edit_text("🏁 Справу закрито.")
 
 async def main():
     init_db()
