@@ -133,28 +133,24 @@ async def process_file(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Акт №{data['number']} збережено!")
     await state.clear()
 
-    # Сповіщення бухгалтера
+   # Сповіщення бухгалтера
     for acc_id, allowed_osbb in ACCESS_MAP.items():
         if data['osbb'] in allowed_osbb:
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Отримано", callback_data=f"rec_{db_id}")]])
-            caption = f"📄 Акт №{data['number']}\n🏢 ОСББ: {data['osbb']}\nℹ️ Опис: {data['descr']}"
+            caption = f"📄 <b>Акт №{data['number']}</b>\n🏢 ОСББ: {data['osbb']}\nℹ️ Опис: {data['descr']}"
             
             try:
                 if not file_id:
-                    # Якщо файлу немає — шлемо текст
-                    await bot.send_message(acc_id, caption, reply_markup=kb)
+                    await bot.send_message(acc_id, caption, reply_markup=kb, parse_mode="HTML")
                 else:
-                    # Перевіряємо, чи це фото (зазвичай фото приходять як список, але ми зберігали file_id)
-                    # Найнадійніший спосіб — спробувати відправити як документ, 
-                    # але Telegram краще "їсть" фото через send_photo
+                    # Пробуємо відправити як фото (найкраще для перегляду)
                     try:
-                        # Спробуємо відправити як документ (універсально для PDF та файлів)
-                        await bot.send_document(acc_id, file_id, caption=caption, reply_markup=kb)
+                        await bot.send_photo(acc_id, file_id, caption=caption, reply_markup=kb, parse_mode="HTML")
                     except:
-                        # Якщо не пішло як документ (напр. це чисте фото), шлемо як фото
-                        await bot.send_photo(acc_id, file_id, caption=caption, reply_markup=kb)
+                        # Якщо це PDF, шлемо як документ
+                        await bot.send_document(acc_id, file_id, caption=caption, reply_markup=kb, parse_mode="HTML")
             except Exception as e: 
-                print(f"Error sending to accountant {acc_id}: {e}")
+                print(f"Error sending to accountant: {e}")
 
 # 6. ТАБЛИЦІ (ПОТОЧНІ ТА АРХІВ)
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів"]))
@@ -269,19 +265,19 @@ async def view_act_file(callback: CallbackQuery):
     db_id = callback.data.split("_")[1]
     conn = sqlite3.connect('osbb_acts.db')
     c = conn.cursor()
-    c.execute("SELECT file_id FROM acts WHERE id=?", (db_id,))
+    c.execute("SELECT file_id, number, osbb FROM acts WHERE id=?", (db_id,))
     res = c.fetchone()
     conn.close()
     
     if res and res[0]:
-        file_id = res[0]
+        file_id, num, osbb = res
         try:
-            # Спочатку пробуємо відправити як документ (для PDF)
-            await callback.message.answer_document(file_id)
+            # Спочатку пробуємо як фото, щоб було видно відразу
+            await callback.message.answer_photo(file_id, caption=f"📎 Файл до акту №{num} ({osbb})")
         except:
-            # Якщо це фото, відправляємо як фото
-            await callback.message.answer_photo(file_id)
-        await callback.answer()
+            # Якщо не фото (напр. PDF), шлемо як документ
+            await callback.message.answer_document(file_id, caption=f"📎 Документ до акту №{num} ({osbb})")
+        await callback.answer() # Прибирає годинник з кнопки
     else: 
         await callback.answer("Файл відсутній", show_alert=True)
 
