@@ -188,7 +188,7 @@ async def show_docs(message: types.Message):
         text = f"🧾 <b>{name}</b> ({osbb})\n⏳ Статус: <b>{status}</b>"
         btns = []
         if uid in ACCOUNTANTS:
-            if status == "Не отримано": btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"ch_acc_{d_id}")])
+            if status == "Не отримано": btns.append([InlineKeyboardButton(text="📥 Прийняти pdf-файл", callback_data=f"ch_acc_{d_id}")])
             elif status == "В роботі": btns.append([InlineKeyboardButton(text="⚙️ Опрацьовано", callback_data=f"ch_done_{d_id}")])
         if uid == CHAIRMAN_ID:
             if status == "Не отримано": btns.append([InlineKeyboardButton(text="🗑 Видалити pdf-файл", callback_data=f"ch_del_{d_id}")])
