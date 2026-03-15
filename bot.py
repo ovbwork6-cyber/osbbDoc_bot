@@ -137,6 +137,7 @@ async def process_gen_salaries(callback: CallbackQuery):
 
 # --- ЧЕКИ ТА АКТИ (ПОТОЧНІ ТА АРХІВ) ---
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
+@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
 async def show_items(message: types.Message):
     is_archive = "Архів" in message.text
     is_acts = "акт" in message.text.lower()
@@ -152,13 +153,23 @@ async def show_items(message: types.Message):
         c.execute(f"SELECT * FROM {table} WHERE {status_filter} ORDER BY id DESC")
     else:
         allowed = ACCESS_MAP.get(message.from_user.id, [])
-        c.execute(f"SELECT * FROM {table} WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))})", allowed)
+        c.execute(f"SELECT * FROM {table} WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
     
     rows = c.fetchall(); conn.close()
     if not rows: return await message.answer("📭 Порожньо.")
+    
     for r in rows:
         caption = f"📄 {r[1]} ({r[2]})\n⏳ Статус: {r[-1]}"
-        await bot.send_document(message.chat.id, r[-2], caption=caption) if not is_acts else await bot.send_photo(message.chat.id, r[-2], caption=caption)
+        f_id = r[-2] # file_id
+        
+        try:
+            if is_acts:
+                await bot.send_photo(message.chat.id, f_id, caption=caption, parse_mode="HTML")
+            else:
+                await bot.send_document(message.chat.id, f_id, caption=caption, parse_mode="HTML")
+        except Exception as e:
+            # Якщо файл не знайдено або ID невірний, бот просто напише текст
+            await message.answer(f"⚠️ Помилка файлу в записі №{r[0]}:\n{caption}\n(Файл не вдалося завантажити)")
 
 @dp.callback_query(F.data == "add_doc")
 async def add_doc_start(callback: CallbackQuery, state: FSMContext):
