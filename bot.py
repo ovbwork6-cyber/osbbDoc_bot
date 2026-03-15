@@ -90,17 +90,23 @@ def get_main_menu(uid):
         btns.append([KeyboardButton(text="💰 Зарплати")])
     return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
-def get_acts_menu():
-    return ReplyKeyboardMarkup(keyboard=[
+def get_acts_menu(uid):
+    btns = [
         [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
         [KeyboardButton(text="➡️ Перейти до Чеки")]
-    ], resize_keyboard=True)
+    ]
+    if uid == CHAIRMAN_ID:
+        btns.append([KeyboardButton(text="💰 Зарплати")]) # Додаємо сюди
+    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
-def get_docs_menu():
-    return ReplyKeyboardMarkup(keyboard=[
+def get_docs_menu(uid):
+    btns = [
         [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
         [KeyboardButton(text="➡️ Перейти до Акти")]
-    ], resize_keyboard=True)
+    ]
+    if uid == CHAIRMAN_ID:
+        btns.append([KeyboardButton(text="💰 Зарплати")]) # І сюди
+    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
 # --- СТАРТ ТА НАВІГАЦІЯ ---
 @dp.message(Command("start"))
@@ -111,11 +117,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.in_(["📄 Акти", "➡️ Перейти до Акти"]))
 async def menu_acts(message: types.Message):
-    await message.answer("📂 Розділ: АКТИ", reply_markup=get_acts_menu())
+    # Змінюємо тут: додаємо message.from_user.id
+    await message.answer("📂 Розділ: АКТИ", reply_markup=get_acts_menu(message.from_user.id))
 
 @dp.message(F.text.in_(["🧾 Чеки", "➡️ Перейти до Чеки"]))
 async def menu_docs(message: types.Message):
-    await message.answer("📂 Розділ: ЧЕКИ (PDF)", reply_markup=get_docs_menu())
+    # І тут: додаємо message.from_user.id
+    await message.answer("📂 Розділ: ЧЕКИ (PDF)", reply_markup=get_docs_menu(message.from_user.id))
 
 # --- РОЗДІЛ: ЗАРПЛАТИ (ТІЛЬКИ ГОЛОВА) ---
 @dp.message(F.text == "💰 Зарплати", F.from_user.id == CHAIRMAN_ID)
