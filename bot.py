@@ -141,7 +141,8 @@ async def show_items(message: types.Message):
     is_archive = "Архів" in message.text
     is_acts = "акт" in message.text.lower()
     table = "acts" if is_acts else "docs"
-    status_filter = "status LIKE 'Завершено%'" if is_archive else "status NOT LIKE 'Завершено%'"
+    # Для архіву шукаємо тільки статус 'Завершено'
+    status_filter = "status = 'Завершено'" if is_archive else "status != 'Завершено'"
     
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     if not is_archive and not is_acts and message.from_user.id == CHAIRMAN_ID:
