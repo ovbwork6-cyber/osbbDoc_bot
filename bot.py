@@ -57,7 +57,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user.id == CHAIRMAN_ID or message.from_user.id in ACCOUNTANTS:
         await message.answer("👋 Система ОСББ готова до роботи.", reply_markup=get_main_menu())
 
-# --- ЛОГІКА АКТІВ (ГОЛОВА) ---
+# --- РЕЄСТРАЦІЯ АКТУ (ГОЛОВА) ---
 @dp.message(Command("new_act"), F.from_user.id == CHAIRMAN_ID)
 async def start_new_act(message: types.Message, state: FSMContext):
     await message.answer("📝 Введіть номер акту:")
@@ -90,133 +90,17 @@ async def process_act_file(message: types.Message, state: FSMContext):
     c = conn.cursor()
     c.execute("INSERT INTO acts (number, osbb, descr, file_id, status) VALUES (?, ?, ?, ?, ?)",
               (data['number'], data['osbb'], data['descr'], f_id, "Не отримано"))
-    db_id = c.lastrowid
     conn.commit()
     conn.close()
 
-    await message.answer(f"✅ Акт №{data['number']} зареєстровано (Статус: Не отримано)")
+    await message.answer(f"✅ Акт №{data['number']} зареєстровано.")
     await state.clear()
 
-    # Сповіщення бухгалтера
-    for acc_id, osbbs in ACCESS_MAP.items():
-        if data['osbb'] in osbbs:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"acc_accept_{db_id}")]])
-            caption = f"📄 <b>Новий Акт №{data['number']}</b>\n🏢 ОСББ: {data['osbb']}\n📝 Опис: {data['descr']}\n⏳ Статус: Не отримано"
-            try:
-                await bot.send_photo(acc_id, f_id, caption=caption, reply_markup=kb, parse_mode="HTML")
-            except:
-                await bot.send_document(acc_id, f_id, caption=caption, reply_markup=kb, parse_mode="HTML")
-
-# --- ЛОГІКА ЧЕКІВ (ГОЛОВА) ---
-@dp.callback_query(F.data == "add_doc", F.from_user.id == CHAIRMAN_ID)
-async def start_add_doc(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("📝 Назва чеків (напр. Чеки Березень):")
-    await state.set_state(DocForm.name)
-    await callback.answer()
-
-@dp.message(DocForm.name)
-async def process_doc_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("🏢 Вкажіть ОСББ:")
-    await state.set_state(DocForm.osbb)
-
-@dp.message(DocForm.osbb)
-async def process_doc_osbb(message: types.Message, state: FSMContext):
-    await state.update_data(osbb=message.text.strip())
-    await message.answer("📎 Завантажте ПДФ файл з чеками:")
-    await state.set_state(DocForm.file)
-
-@dp.message(DocForm.file, F.document)
-async def process_doc_file(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO docs (name, osbb, file_id, status) VALUES (?, ?, ?, ?)", 
-              (data['name'], data['osbb'], message.document.file_id, "Не отримано"))
-    db_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    await state.clear()
-    await message.answer(f"✅ Файл '{data['name']}' збережено.")
-
-    # Повідомлення бухгалтеру про чек
-    for acc_id, osbbs in ACCESS_MAP.items():
-        if data['osbb'] in osbbs:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Прийняти чек", callback_data=f"chk_accept_{db_id}")]])
-            await bot.send_document(acc_id, message.document.file_id, 
-                                    caption=f"🧾 <b>Нові чеки: {data['name']}</b>\n🏢 {data['osbb']}\n⏳ Статус: Не отримано", 
-                                    reply_markup=kb, parse_mode="HTML")
-
-# --- ОБРОБНИКИ КНОПОК БУХГАЛТЕРА (АКТИ) ---
-@dp.callback_query(F.data.startswith("acc_accept_"))
-async def acc_accept_act(callback: CallbackQuery):
-    db_id = callback.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("UPDATE acts SET status='В роботі' WHERE id=?", (db_id,))
-    conn.commit()
-    conn.close()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💰 Оплачено", callback_data=f"acc_paid_{db_id}")]])
-    new_caption = callback.message.caption.replace("⏳ Статус: Не отримано", "⏳ Статус: В роботі")
-    await callback.message.edit_caption(caption=new_caption, reply_markup=kb, parse_mode="HTML")
-    await callback.answer("Акт прийнято в роботу")
-
-@dp.callback_query(F.data.startswith("acc_paid_"))
-async def acc_paid_act(callback: CallbackQuery):
-    db_id = callback.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("UPDATE acts SET status='Акт оплачений' WHERE id=?", (db_id,))
-    c.execute("SELECT number, osbb FROM acts WHERE id=?", (db_id,))
-    res = c.fetchone()
-    conn.commit()
-    conn.close()
-    
-    await callback.message.edit_caption(caption=callback.message.caption.replace("⏳ Статус: В роботі", "✅ Статус: Акт оплачений"), reply_markup=None)
-    
-    # Кнопка для Голови
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏁 Завершити", callback_data=f"finish_{db_id}")]])
-    await bot.send_message(CHAIRMAN_ID, f"💰 Акт №{res[0]} ({res[1]}) оплачений. Можна закривати:", reply_markup=kb)
-    await callback.answer("Статус змінено на: Оплачено")
-
-# --- ОБРОБНИКИ КНОПОК БУХГАЛТЕРА (ЧЕКИ) ---
-@dp.callback_query(F.data.startswith("chk_accept_"))
-async def chk_accept(callback: CallbackQuery):
-    db_id = callback.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("UPDATE docs SET status='В роботі' WHERE id=?", (db_id,))
-    conn.commit()
-    conn.close()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚙️ Опрацьовано", callback_data=f"chk_done_{db_id}")]])
-    await callback.message.edit_caption(caption=callback.message.caption.replace("⏳ Статус: Не отримано", "⏳ Статус: В роботі"), reply_markup=kb, parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("chk_done_"))
-async def chk_done(callback: CallbackQuery):
-    db_id = callback.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("UPDATE docs SET status='Роботу завершено' WHERE id=?", (db_id,))
-    conn.commit()
-    conn.close()
-    await callback.message.edit_caption(caption=callback.message.caption.replace("⏳ Статус: В роботі", "✅ Статус: Роботу завершено"), reply_markup=None)
-    await callback.answer("Чеки опрацьовано")
-
-# --- ЗАВЕРШЕННЯ ТА АРХІВ ---
-@dp.callback_query(F.data.startswith("finish_"))
-async def finish_act(callback: CallbackQuery):
-    db_id = callback.data.split("_")[1]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("UPDATE acts SET status='Завершено' WHERE id=?", (db_id,))
-    conn.commit()
-    conn.close()
-    await callback.message.edit_text("🏁 Акт перенесено в архів.")
-
+# --- ВІДОБРАЖЕННЯ АКТІВ (ПОТОЧНІ ТА АРХІВ) ---
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів"]))
-async def show_table(message: types.Message):
+async def show_acts(message: types.Message):
     is_archive = "Архів" in message.text
-    status_filter = "status = 'Завершено'" if is_archive else "status != 'Завершено'"
+    status_filter = "status = 'Завершено!'" if is_archive else "status != 'Завершено!'"
     uid = message.from_user.id
     
     conn = sqlite3.connect('osbb_acts.db')
@@ -232,55 +116,161 @@ async def show_table(message: types.Message):
     if not rows: return await message.answer("📭 Порожньо.")
 
     for db_id, num, osbb, status, desc, f_id in rows:
-        text = f"🔹 <b>Акт №{num}</b> ({osbb})\n📝 {desc}\n⏳ Статус: <i>{status}</i>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📄 Файл", callback_data=f"view_{db_id}")]])
-        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        text = f"📄 <b>Акт №{num}</b> ({osbb})\n📝 {desc}\n⏳ Статус: <b>{status}</b>"
+        btns = []
+        
+        # Логіка кнопок для бухгалтера
+        if uid in ACCOUNTANTS and not is_archive:
+            if status == "Не отримано":
+                btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"act_accept_{db_id}")])
+            elif status == "В роботі":
+                btns.append([InlineKeyboardButton(text="💰 Оплачено", callback_data=f"act_paid_{db_id}")])
+        
+        # Логіка кнопок для голови
+        if uid == CHAIRMAN_ID and not is_archive:
+            if status == "Не отримано":
+                btns.append([InlineKeyboardButton(text="🗑 Видалити акт", callback_data=f"act_del_{db_id}")])
+            elif status == "Акт оплачений":
+                btns.append([InlineKeyboardButton(text="🏁 Завершити", callback_data=f"act_finish_{db_id}")])
+        
+        # Кнопка перегляду файлу завжди
+        btns.append([InlineKeyboardButton(text="🖼 Переглянути фото", callback_data=f"view_act_{db_id}")])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=btns)
+        try:
+            await bot.send_photo(message.chat.id, f_id, caption=text, reply_markup=kb, parse_mode="HTML")
+        except:
+            await bot.send_document(message.chat.id, f_id, caption=text, reply_markup=kb, parse_mode="HTML")
 
-# --- ПЕРЕГЛЯД ЧЕКІВ ---
+# --- ОБРОБНИКИ ДІЙ (АКТИ) ---
+@dp.callback_query(F.data.startswith("act_accept_"))
+async def act_accept(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE acts SET status='В роботі' WHERE id=?", (db_id,))
+    conn.commit(); conn.close()
+    await callback.answer("Акт прийнято в роботу")
+    await callback.message.delete() # Видаляємо старе повідомлення, щоб користувач натиснув "Поточні" знову
+
+@dp.callback_query(F.data.startswith("act_paid_"))
+async def act_paid(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE acts SET status='Акт оплачений' WHERE id=?", (db_id,))
+    conn.commit(); conn.close()
+    await callback.answer("Статус: Акт оплачений")
+    await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("act_finish_"))
+async def act_finish(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE acts SET status='Завершено!' WHERE id=?", (db_id,))
+    conn.commit(); conn.close()
+    await callback.answer("Акт перенесено в архів")
+    await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("act_del_"))
+async def act_del(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("DELETE FROM acts WHERE id=?", (db_id,))
+    conn.commit(); conn.close()
+    await callback.answer("Акт видалено", show_alert=True)
+    await callback.message.delete()
+
+# --- ЛОГІКА ЧЕКІВ (PDF) ---
 @dp.message(F.text == "📁 Чеки ОСББ")
 async def list_docs(message: types.Message):
     uid = message.from_user.id
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     if uid == CHAIRMAN_ID:
-        c.execute("SELECT id, name, osbb, status FROM docs ORDER BY id DESC")
+        c.execute("SELECT id, name, osbb, status, file_id FROM docs ORDER BY id DESC")
     else:
         allowed = ACCESS_MAP.get(uid, [])
-        c.execute(f"SELECT id, name, osbb, status FROM docs WHERE osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
-    rows = c.fetchall()
-    conn.close()
+        c.execute(f"SELECT id, name, osbb, status, file_id FROM docs WHERE osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
+    rows = c.fetchall(); conn.close()
 
-    kb_list = []
-    for d_id, name, osbb, status in rows:
-        kb_list.append([InlineKeyboardButton(text=f"📥 {name} ({osbb}) - {status}", callback_data=f"getdoc_{d_id}")])
+    if not rows and uid != CHAIRMAN_ID: return await message.answer("📭 Чеки відсутні.")
     
     if uid == CHAIRMAN_ID:
-        kb_list.append([InlineKeyboardButton(text="➕ Додати чеки (PDF)", callback_data="add_doc")])
-    
-    await message.answer("🗄 Чеки ОСББ:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list))
+        kb_add = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Додати pdf-файл", callback_data="add_doc")]])
+        await message.answer("Керування чеками:", reply_markup=kb_add)
 
-@dp.callback_query(F.data.startswith("getdoc_"))
-async def get_general_doc(callback: CallbackQuery):
-    d_id = callback.data.split("_")[1]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("SELECT file_id FROM docs WHERE id=?", (d_id,))
-    res = c.fetchone()
-    conn.close()
-    if res: await callback.message.answer_document(res[0])
-    await callback.answer()
+    for d_id, name, osbb, status, f_id in rows:
+        text = f"🧾 <b>{name}</b> ({osbb})\n⏳ Статус: <b>{status}</b>"
+        btns = []
+        if uid in ACCOUNTANTS:
+            if status == "Не отримано": btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"chk_acc_{d_id}")])
+            elif status == "В роботі": btns.append([InlineKeyboardButton(text="⚙️ Опрацьовано", callback_data=f"chk_done_{d_id}")])
+        
+        if uid == CHAIRMAN_ID:
+            if status == "Не отримано": btns.append([InlineKeyboardButton(text="🗑 Видалити pdf-файл", callback_data=f"chk_del_{d_id}")])
+            elif status == "Роботу завершено": btns.append([InlineKeyboardButton(text="🏁 Завершити", callback_data=f"chk_fin_{d_id}")])
+        
+        btns.append([InlineKeyboardButton(text="📥 Скачати PDF", callback_data=f"view_chk_{d_id}")])
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML")
 
+# --- ОБРОБНИКИ ДІЙ (ЧЕКИ) ---
+@dp.callback_query(F.data == "add_doc")
+async def add_doc_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("📝 Назва (напр. Чеки Світло):"); await state.set_state(DocForm.name); await callback.answer()
+
+@dp.message(DocForm.name)
+async def doc_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text); await message.answer("🏢 Вкажіть ОСББ:"); await state.set_state(DocForm.osbb)
+
+@dp.message(DocForm.osbb)
+async def doc_osbb(message: types.Message, state: FSMContext):
+    await state.update_data(osbb=message.text.strip()); await message.answer("📎 Завантажте PDF-файл:"); await state.set_state(DocForm.file)
+
+@dp.message(DocForm.file, F.document)
+async def doc_file(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("INSERT INTO docs (name, osbb, file_id, status) VALUES (?, ?, ?, ?)", (data['name'], data['osbb'], message.document.file_id, "Не отримано"))
+    conn.commit(); conn.close(); await state.clear(); await message.answer("✅ PDF завантажено.")
+
+@dp.callback_query(F.data.startswith("chk_acc_"))
+async def chk_acc(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE docs SET status='В роботі' WHERE id=?", (db_id,))
+    conn.commit(); conn.close(); await callback.answer("Прийнято в роботу"); await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("chk_done_"))
+async def chk_done(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE docs SET status='Роботу завершено' WHERE id=?", (db_id,))
+    conn.commit(); conn.close(); await callback.answer("Опрацьовано"); await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("chk_fin_"))
+async def chk_fin(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE docs SET status='Завершено!' WHERE id=?", (db_id,))
+    conn.commit(); conn.close(); await callback.answer("Завершено"); await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("chk_del_"))
+async def chk_del(callback: CallbackQuery):
+    db_id = callback.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("DELETE FROM docs WHERE id=?", (db_id,))
+    conn.commit(); conn.close(); await callback.answer("Видалено", show_alert=True); await callback.message.delete()
+
+# --- ПЕРЕГЛЯД ФАЙЛІВ ---
 @dp.callback_query(F.data.startswith("view_"))
-async def view_act_file(callback: CallbackQuery):
-    db_id = callback.data.split("_")[1]
-    conn = sqlite3.connect('osbb_acts.db')
-    c = conn.cursor()
-    c.execute("SELECT file_id FROM acts WHERE id=?", (db_id,))
-    res = c.fetchone()
-    conn.close()
+async def view_file(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    table = "acts" if parts[1] == "act" else "docs"
+    db_id = parts[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute(f"SELECT file_id FROM {table} WHERE id=?", (db_id,))
+    res = c.fetchone(); conn.close()
     if res:
-        try: await callback.message.answer_photo(res[0])
-        except: await callback.message.answer_document(res[0])
+        try: await bot.send_photo(callback.message.chat.id, res[0])
+        except: await bot.send_document(callback.message.chat.id, res[0])
     await callback.answer()
 
 async def main():
