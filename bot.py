@@ -190,4 +190,45 @@ async def show_items(message: types.Message):
             else:
                 await bot.send_document(message.chat.id, f_id, caption=caption)
         except Exception:
-            await message.answer(f"⚠️ Файл №{r[0]} не знайдено в систем
+            await message.answer(f"⚠️ Файл №{r[0]} не знайдено в системі Telegram, але запис є:\n{caption}")
+
+# --- ФОРМА ДОДАВАННЯ PDF ---
+@dp.callback_query(F.data == "add_doc")
+async def add_doc_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("📝 Введіть коротку назву чеку (напр. 'Світло березень'):")
+    await state.set_state(DocForm.name)
+    await callback.answer()
+
+@dp.message(DocForm.name)
+async def doc_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("🏢 Введіть назву ОСББ (ВП-16, Е21, ОКПТ або В19):")
+    await state.set_state(DocForm.osbb)
+
+@dp.message(DocForm.osbb)
+async def doc_osbb(message: types.Message, state: FSMContext):
+    await state.update_data(osbb=message.text.strip().upper())
+    await message.answer("📎 Надішліть PDF-файл чеку:")
+    await state.set_state(DocForm.file)
+
+@dp.message(DocForm.file, F.document)
+async def doc_file_proc(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("INSERT INTO docs (name, osbb, file_id, status) VALUES (?, ?, ?, ?)", 
+              (data['name'], data['osbb'], message.document.file_id, "Не отримано"))
+    conn.commit(); conn.close()
+    await state.clear()
+    await message.answer("✅ Чек успішно збережено та додано до списку.")
+
+# --- ЗАПУСК ---
+async def main():
+    init_db()
+    print("Бот запущений...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот зупинений.")
