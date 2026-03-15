@@ -44,8 +44,8 @@ def migrate_db():
     conn = sqlite3.connect('osbb_acts.db')
     cursor = conn.cursor()
     # Оновлюємо статус архіву (додаємо знак оклику, якщо його не було)
-    cursor.execute("UPDATE acts SET status = 'Завершено!' WHERE status = 'Завершено'")
-    cursor.execute("UPDATE docs SET status = 'Завершено!' WHERE status = 'Завершено'")
+    cursor.execute("UPDATE acts SET status = 'Завершено' WHERE status = 'Завершено'")
+    cursor.execute("UPDATE docs SET status = 'Завершено' WHERE status = 'Завершено'")
     # Синхронізуємо інші статуси за потреби
     cursor.execute("UPDATE acts SET status = 'Акт оплачений' WHERE status = 'Оплачено'")
     conn.commit()
