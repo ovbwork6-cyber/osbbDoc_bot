@@ -33,7 +33,13 @@ ACCOUNTANTS = [ACC1_ID, ACC2_ID]
 STAFF_CONFIG = {
     "ВП-16": {"Голова": 6000, "Бухгалтер": 3000, "Прибирання": 12000, "Сантехнік": 2800},
     "Е21": {"Голова": 6000, "Бухгалтер": 3000, "Сантехнік": 1000, "Двірник": "seasonal"},
-    "ОКПТ": {"Голова": 4000, "Бухгалтер": 1000, "Нарахування ВТВК": 1000, "Двірник": 2000, "Обхідник": 1000}
+    "ОКПТ": {"Голова": 4000, "Бухгалтер": 1000, "Нарахування ВТВК": 1000, "Двірник": 2000, "Обхідник": 1000},
+    "В19": {
+        "Голова": 6000, 
+        "Сантехнік": 2500, 
+        "Бухгалтер": 2500, 
+        "Бухгалтер (ФОП)": 500
+    }
 }
 
 bot = Bot(token=TOKEN)
@@ -132,7 +138,8 @@ async def salary_selection(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏢 ВП-16", callback_data="sal_view_ВП-16")],
         [InlineKeyboardButton(text="🏢 Е21", callback_data="sal_view_Е21")],
-        [InlineKeyboardButton(text="🏢 ОКПТ", callback_data="sal_view_ОКПТ")]
+        [InlineKeyboardButton(text="🏢 ОКПТ", callback_data="sal_view_ОКПТ")],
+        [InlineKeyboardButton(text="🏢 В19", callback_data="sal_view_В19")]
     ])
     await message.answer("Оберіть ОСББ для контролю виплат:", reply_markup=kb)
 
