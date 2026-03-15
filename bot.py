@@ -155,9 +155,15 @@ async def show_items(message: types.Message):
     if not rows: return await message.answer("📭 Порожньо.")
     
     for r in rows:
-        # r[1] - назва/номер, r[2] - ОСББ, r[-1] - статус
-        caption = f"📄 {r[1]} ({r[2]})\n⏳ Статус: {r[-1] if r[-1] else 'Очікує'}"
-        f_id = r[-2] # file_id
+        # r[1] - номер/назва, r[2] - ОСББ, r[3] - опис (тільки для актів)
+        # r[4] - file_id, r[5] - статус
+        
+        if is_acts:
+            caption = f"📄 {r[1]} ({r[2]})\n📝 {r[3]}\n⏳ Статус: {r[5]}"
+            f_id = r[4]
+        else:
+            caption = f"📄 {r[1]} ({r[2]})\n⏳ Статус: {r[4]}" # для чеків статус в r[4]
+            f_id = r[3] # для чеків file_id в r[3]
         
         try:
             if is_acts:
