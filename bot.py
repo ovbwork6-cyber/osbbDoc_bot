@@ -9,7 +9,7 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup, 
-                            CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, FSInputFile)
+                            CallbackQuery, ReplyKeyboardMarkup, KeyboardButton)
 
 # --- НАЛАШТУВАННЯ ---
 load_dotenv()
@@ -29,18 +29,12 @@ STAFF_CONFIG = {
     "ВП-16": {"Голова": 6000, "Бухгалтер": 3000, "Прибирання": 12000, "Сантехнік": 2800},
     "Е21": {"Голова": 6000, "Бухгалтер": 3000, "Сантехнік": 1000, "Двірник": "seasonal"},
     "ОКПТ": {"Голова": 4000, "Бухгалтер": 1000, "Нарахування ВТВК": 1000, "Двірник": 2000, "Обхідник": 1000},
-    "В19": {
-        "Голова": 6000, 
-        "Сантехнік": 2500, 
-        "Бухгалтер": 2500, 
-        "Бухгалтер (ФОП)": 500
-    }
+    "В19": {"Голова": 6000, "Сантехнік": 2500, "Бухгалтер": 2500, "Бухгалтер (ФОП)": 500}
 }
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- СТАНИ FSM ---
 class ActForm(StatesGroup):
     number, osbb, descr, file = State(), State(), State(), State()
 
@@ -48,25 +42,17 @@ class DocForm(StatesGroup):
     name, osbb, file = State(), State(), State()
 
 class SalaryEdit(StatesGroup):
-    waiting_for_amount = State()
-    waiting_for_comment = State()
+    waiting_for_amount = State(), waiting_for_comment = State()
 
 # --- БАЗА ДАНИХ ---
 def init_db():
-    conn = sqlite3.connect('osbb_acts.db')
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS acts 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS docs 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS salaries 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, month_year TEXT, employee TEXT, amount REAL, osbb TEXT, status TEXT)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS salary_history 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, salary_id INTEGER, old_amount REAL, new_amount REAL, comment TEXT, date TEXT)''')
-    conn.commit()
-    conn.close()
+    conn = sqlite3.connect('osbb_acts.db'); cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS acts (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS salaries (id INTEGER PRIMARY KEY AUTOINCREMENT, month_year TEXT, employee TEXT, amount REAL, osbb TEXT, status TEXT)')
+    cursor.execute('CREATE TABLE IF NOT EXISTS salary_history (id INTEGER PRIMARY KEY AUTOINCREMENT, salary_id INTEGER, old_amount REAL, new_amount REAL, comment TEXT, date TEXT)')
+    conn.commit(); conn.close()
 
-# --- ДОПОМІЖНІ ФУНКЦІЇ ---
 def get_seasonal_salary():
     month = datetime.now().month
     return 4500 if 4 <= month <= 9 else 3500
@@ -74,8 +60,7 @@ def get_seasonal_salary():
 # --- КЛАВІАТУРИ ---
 def get_main_menu(uid):
     btns = [[KeyboardButton(text="📄 Акти"), KeyboardButton(text="🧾 Чеки")]]
-    if uid == CHAIRMAN_ID:
-        btns.append([KeyboardButton(text="💰 Зарплати")])
+    if uid == CHAIRMAN_ID: btns.append([KeyboardButton(text="💰 Зарплати")])
     return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
 def get_acts_menu(uid):
@@ -89,11 +74,10 @@ def get_docs_menu(uid):
     return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
 
 # --- ОБРОБНИКИ ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("👋 Система ОСББ готова до роботи.", reply_markup=get_main_menu(message.from_user.id))
+    await message.answer("👋 Система ОСББ готова.", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(F.text.in_(["📄 Акти", "➡️ Перейти до Акти"]))
 async def menu_acts(message: types.Message):
@@ -103,6 +87,7 @@ async def menu_acts(message: types.Message):
 async def menu_docs(message: types.Message):
     await message.answer("📂 Розділ: ЧЕКИ (PDF)", reply_markup=get_docs_menu(message.from_user.id))
 
+# --- ЗАРПЛАТИ ---
 @dp.message(F.text == "💰 Зарплати", F.from_user.id == CHAIRMAN_ID)
 async def salary_selection(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -111,95 +96,88 @@ async def salary_selection(message: types.Message):
         [InlineKeyboardButton(text="🏢 ОКПТ", callback_data="sal_view_ОКПТ")],
         [InlineKeyboardButton(text="🏢 В19", callback_data="sal_view_В19")]
     ])
-    await message.answer("Оберіть ОСББ для контролю виплат:", reply_markup=kb)
+    await message.answer("Оберіть ОСББ:", reply_markup=kb)
 
-# --- ЛОГІКА АКТІВ ---
-@dp.message(Command("new_act"), F.from_user.id == CHAIRMAN_ID)
-async def start_new_act(message: types.Message, state: FSMContext):
-    await message.answer("📝 Введіть номер акту:")
-    await state.set_state(ActForm.number)
-
-@dp.message(ActForm.number)
-async def process_num(message: types.Message, state: FSMContext):
-    await state.update_data(number=message.text)
-    await message.answer("🏢 Вкажіть ОСББ (ВП-16, Е21, ОКПТ, В19):")
-    await state.set_state(ActForm.osbb)
-
-@dp.message(ActForm.osbb)
-async def process_osbb(message: types.Message, state: FSMContext):
-    await state.update_data(osbb=message.text.strip())
-    await message.answer("📋 Опис робіт:")
-    await state.set_state(ActForm.descr)
-
-@dp.message(ActForm.descr)
-async def process_descr(message: types.Message, state: FSMContext):
-    await state.update_data(descr=message.text)
-    await message.answer("📎 Надішліть ФОТО акту:")
-    await state.set_state(ActForm.file)
-
-@dp.message(ActForm.file, F.photo | F.document)
-async def process_act_file(message: types.Message, state: FSMContext):
-    f_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    data = await state.get_data()
+@dp.callback_query(F.data.startswith("sal_view_"))
+async def view_salaries(callback: CallbackQuery):
+    osbb = callback.data.split("_")[2]
+    m_y = datetime.now().strftime("%m.%Y")
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("INSERT INTO acts (number, osbb, descr, file_id, status) VALUES (?, ?, ?, ?, ?)",
-              (data['number'], data['osbb'], data['descr'], f_id, "Не отримано"))
-    db_id = c.lastrowid
+    c.execute("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
+    rows = c.fetchall()
+    if not rows:
+        if datetime.now().day >= 15: # Тимчасово 15 для тесту
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Сформувати", callback_data=f"sal_gen_{osbb}")]])
+            await callback.message.edit_text(f"Нарахувань за {m_y} ще немає.", reply_markup=kb)
+        else:
+            await callback.answer("Нарахування доступні з 20-го числа.", show_alert=True)
+        return
+    
+    text = f"💰 <b>{osbb} ({m_y})</b>\n\n"
+    kb_list = []
+    for s_id, emp, amo, stat in rows:
+        is_paid = stat == "Видано"
+        text += f"{'✅' if is_paid else '⏳'} {emp}: {amo} грн\n"
+        if not is_paid:
+            kb_list.append([InlineKeyboardButton(text=f"💵 {emp}", callback_data=f"sal_pay_{s_id}")])
+    kb_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sal_back")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_list), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("sal_gen_"))
+async def process_gen_salaries(callback: CallbackQuery):
+    osbb = callback.data.split("_")[2]
+    m_y = datetime.now().strftime("%m.%Y")
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    for emp, amo in STAFF_CONFIG[osbb].items():
+        val = get_seasonal_salary() if amo == "seasonal" else amo
+        c.execute("INSERT INTO salaries (month_year, employee, amount, osbb, status) VALUES (?,?,?,?,?)", (m_y, emp, val, osbb, "Очікує"))
     conn.commit(); conn.close()
-    await message.answer(f"✅ Акт №{data['number']} зареєстровано.")
-    await state.clear()
-    for acc_id, osbbs in ACCESS_MAP.items():
-        if data['osbb'] in osbbs:
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Прийняти в роботу", callback_data=f"act_acc_{db_id}")]])
-            caption = f"🔔 <b>Новий Акт №{data['number']}</b>\n🏢 ОСББ: {data['osbb']}"
-            await bot.send_photo(acc_id, f_id, caption=caption, reply_markup=kb, parse_mode="HTML")
+    await view_salaries(callback)
 
-@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів"]))
-async def show_acts(message: types.Message):
+# --- ЧЕКИ ТА АКТИ (ПОТОЧНІ ТА АРХІВ) ---
+@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
+async def show_items(message: types.Message):
     is_archive = "Архів" in message.text
-    # Гнучкий фільтр статусів для Архіву
+    is_acts = "акт" in message.text.lower()
+    table = "acts" if is_acts else "docs"
     status_filter = "status LIKE 'Завершено%'" if is_archive else "status NOT LIKE 'Завершено%'"
-    uid = message.from_user.id
+    
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    if uid == CHAIRMAN_ID:
-        c.execute(f"SELECT id, number, osbb, status, descr, file_id FROM acts WHERE {status_filter} ORDER BY id DESC")
+    if not is_archive and not is_acts and message.from_user.id == CHAIRMAN_ID:
+        kb_add = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Додати pdf-файл", callback_data="add_doc")]])
+        await message.answer("Керування чеками:", reply_markup=kb_add)
+
+    if message.from_user.id == CHAIRMAN_ID:
+        c.execute(f"SELECT * FROM {table} WHERE {status_filter} ORDER BY id DESC")
     else:
-        allowed = ACCESS_MAP.get(uid, [])
-        c.execute(f"SELECT id, number, osbb, status, descr, file_id FROM acts WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
+        allowed = ACCESS_MAP.get(message.from_user.id, [])
+        c.execute(f"SELECT * FROM {table} WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))})", allowed)
+    
     rows = c.fetchall(); conn.close()
     if not rows: return await message.answer("📭 Порожньо.")
+    for r in rows:
+        caption = f"📄 {r[1]} ({r[2]})\n⏳ Статус: {r[-1]}"
+        await bot.send_document(message.chat.id, r[-2], caption=caption) if not is_acts else await bot.send_photo(message.chat.id, r[-2], caption=caption)
 
-    for db_id, num, osbb, status, desc, f_id in rows:
-        text = f"📄 <b>Акт №{num}</b> ({osbb})\n⏳ Статус: <b>{status}</b>"
-        btns = []
-        if not is_archive:
-            if uid in ACCOUNTANTS:
-                if status == "Не отримано": btns.append([InlineKeyboardButton(text="📥 Прийняти в роботу", callback_data=f"act_acc_{db_id}")])
-                elif status == "В роботі": btns.append([InlineKeyboardButton(text="💰 Оплачено", callback_data=f"act_paid_{db_id}")])
-            if uid == CHAIRMAN_ID:
-                if status == "Акт оплачений": btns.append([InlineKeyboardButton(text="🏁 Завершити", callback_data=f"act_fin_{db_id}")])
-        await bot.send_photo(message.chat.id, f_id, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns) if btns else None, parse_mode="HTML")
+@dp.callback_query(F.data == "add_doc")
+async def add_doc_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("📝 Назва чеку:"); await state.set_state(DocForm.name); await callback.answer()
 
-# --- КОЛБЕКИ ---
-@dp.callback_query(F.data.startswith(("act_acc_", "act_paid_", "act_fin_", "sal_view_")))
-async def global_callbacks(callback: CallbackQuery):
-    action, _, db_id = callback.data.rpartition("_")
+@dp.message(DocForm.name)
+async def doc_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text); await message.answer("🏢 ОСББ:"); await state.set_state(DocForm.osbb)
+
+@dp.message(DocForm.osbb)
+async def doc_osbb(message: types.Message, state: FSMContext):
+    await state.update_data(osbb=message.text.strip()); await message.answer("📎 Надішліть PDF:"); await state.set_state(DocForm.file)
+
+@dp.message(DocForm.file, F.document)
+async def doc_file_proc(message: types.Message, state: FSMContext):
+    data = await state.get_data()
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    
-    if action == "act_acc":
-        c.execute("UPDATE acts SET status='В роботі' WHERE id=?", (db_id,))
-        await bot.send_message(CHAIRMAN_ID, "🔔 Бухгалтер прийняв Акт у роботу.")
-    elif action == "act_paid":
-        c.execute("UPDATE acts SET status='Акт оплачений' WHERE id=?", (db_id,))
-        await bot.send_message(CHAIRMAN_ID, "💰 Акт ОПЛАЧЕНО.")
-    elif action == "act_fin":
-        c.execute("UPDATE acts SET status='Завершено!' WHERE id=?", (db_id,))
-    
-    conn.commit(); conn.close()
-    await callback.answer("Виконано")
-    if "act_" in callback.data: await callback.message.delete()
+    c.execute("INSERT INTO docs (name, osbb, file_id, status) VALUES (?, ?, ?, ?)", (data['name'], data['osbb'], message.document.file_id, "Не отримано"))
+    conn.commit(); conn.close(); await state.clear(); await message.answer("✅ PDF додано.")
 
-# --- ЗАПУСК ---
 async def main():
     init_db()
     await dp.start_polling(bot)
