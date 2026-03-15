@@ -28,7 +28,7 @@ ACCOUNTANTS = [ACC1_ID, ACC2_ID]
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- БАЗА ДАНИХ ---
+# --- БАЗА ДАНИХ ТА МІГРАЦІЯ ---
 def init_db():
     conn = sqlite3.connect('osbb_acts.db')
     cursor = conn.cursor()
@@ -36,6 +36,18 @@ def init_db():
         (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS docs 
         (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT)''')
+    conn.commit()
+    conn.close()
+
+def migrate_db():
+    """Оновлює старі статуси в БД до нових стандартів коду"""
+    conn = sqlite3.connect('osbb_acts.db')
+    cursor = conn.cursor()
+    # Оновлюємо статус архіву (додаємо знак оклику, якщо його не було)
+    cursor.execute("UPDATE acts SET status = 'Завершено!' WHERE status = 'Завершено'")
+    cursor.execute("UPDATE docs SET status = 'Завершено!' WHERE status = 'Завершено'")
+    # Синхронізуємо інші статуси за потреби
+    cursor.execute("UPDATE acts SET status = 'Акт оплачений' WHERE status = 'Оплачено'")
     conn.commit()
     conn.close()
 
@@ -67,7 +79,7 @@ class DocForm(StatesGroup):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("👋 Ласкаво просимо до системи керування документами ОСББ.", reply_markup=get_main_menu())
+    await message.answer("👋 Система ОСББ готова до роботи. Оберіть розділ:", reply_markup=get_main_menu())
 
 # --- НАВІГАЦІЯ ---
 @dp.message(F.text.in_(["📄 Акти", "➡️ Перейти до Акти"]))
@@ -139,7 +151,7 @@ async def show_acts(message: types.Message):
         c.execute(f"SELECT id, number, osbb, status, descr, file_id FROM acts WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
     rows = c.fetchall(); conn.close()
 
-    if not rows: return await message.answer("📭 Список порожній.")
+    if not rows: return await message.answer(f"📭 {'Архів актів' if is_archive else 'Поточних актів'} порожній.")
 
     for db_id, num, osbb, status, desc, f_id in rows:
         text = f"📄 <b>Акт №{num}</b> ({osbb})\n📝 {desc}\n⏳ Статус: <b>{status}</b>"
@@ -214,7 +226,7 @@ async def show_docs_list(message: types.Message):
         c.execute(f"SELECT id, name, osbb, status, file_id FROM docs WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
     rows = c.fetchall(); conn.close()
 
-    if not rows: return await message.answer("📭 Список чеків порожній.")
+    if not rows: return await message.answer(f"📭 {'Архів чеків' if is_archive else 'Поточних чеків'} порожній.")
 
     for d_id, name, osbb, status, f_id in rows:
         text = f"🧾 <b>{name}</b> ({osbb})\n⏳ Статус: <b>{status}</b>"
@@ -295,6 +307,7 @@ async def ch_del_cb(callback: CallbackQuery):
 
 async def main():
     init_db()
+    migrate_db() # Цей рядок оновить вашу стару базу даних під новий код
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
