@@ -16,148 +16,167 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 CHAIRMAN_ID = int(os.getenv("CHAIRMAN_ID"))
 
-# Доступ для бухгалтерів
 ACCESS_MAP = {
     5178201242: ["ВП-16", "Е21"],
     1332732213: ["ОКПТ", "В19"]
 }
 
+STAFF_CONFIG = {
+    "ВП-16": {"Голова": 6000, "Бухгалтер": 3000, "Прибирання": 12000, "Сантехнік": 2800},
+    "Е21": {"Голова": 6000, "Бухгалтер": 3000, "Сантехнік": 1000, "Двірник": "seasonal"},
+    "ОКПТ": {"Голова": 4000, "Бухгалтер": 1000, "Нарахування ВТВК": 1000, "Двірник": 2000, "Обхідник": 1000},
+    "В19": {"Голова": 6000, "Сантехнік": 2500, "Бухгалтер": 2500, "Бухгалтер (ФОП)": 500}
+}
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- КЛАСИ СТАНІВ ---
+# --- СТАНИ ---
 class ActForm(StatesGroup):
-    number = State()
-    osbb = State()
-    descr = State()
-    file = State()
+    number, osbb, descr, file = State(), State(), State(), State()
 
 class DocForm(StatesGroup):
-    name = State()
-    osbb = State()
-    file = State()
+    name, osbb, file = State(), State(), State()
 
 # --- БАЗА ДАНИХ ---
 def init_db():
-    conn = sqlite3.connect('osbb_acts.db')
-    cursor = conn.cursor()
-    # Таблиця актів (з описом)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS acts 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT DEFAULT "Очікує")''')
-    # Таблиця чеків
-    cursor.execute('''CREATE TABLE IF NOT EXISTS docs 
-        (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT DEFAULT "Очікує")''')
-    conn.commit()
-    conn.close()
-
-# --- КЛАВІАТУРИ ---
-def get_acts_menu(uid):
-    btns = [
-        [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
-        [KeyboardButton(text="➕ Створити Акт")]
-    ]
-    if uid == CHAIRMAN_ID:
-        btns.append([KeyboardButton(text="➡️ Перейти до Чеки")])
-    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
-
-def get_docs_menu(uid):
-    btns = [
-        [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
-        [KeyboardButton(text="➕ Додати PDF чек")]
-    ]
-    if uid == CHAIRMAN_ID:
-        btns.append([KeyboardButton(text="➡️ Перейти до Акти")])
-    return ReplyKeyboardMarkup(keyboard=btns, resize_keyboard=True)
-
-# --- ОБРОБНИКИ МЕНЮ ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer("👋 Вітаю! Оберіть розділ:", reply_markup=get_acts_menu(message.from_user.id))
-
-@dp.message(F.text.in_(["📄 Акти", "➡️ Перейти до Акти"]))
-async def menu_acts(message: types.Message):
-    await message.answer("📂 Розділ: АКТИ", reply_markup=get_acts_menu(message.from_user.id))
-
-@dp.message(F.text.in_(["🧾 Чеки", "➡️ Перейти до Чеки"]))
-async def menu_docs(message: types.Message):
-    await message.answer("📂 Розділ: ЧЕКИ", reply_markup=get_docs_menu(message.from_user.id))
-
-# --- СТВОРЕННЯ АКТУ (ФОТО) ---
-@dp.message(F.text == "➕ Створити Акт")
-async def start_act(message: types.Message, state: FSMContext):
-    await message.answer("📝 Введіть номер акту:")
-    await state.set_state(ActForm.number)
-
-@dp.message(ActForm.number)
-async def act_num(message: types.Message, state: FSMContext):
-    await state.update_data(number=message.text)
-    await message.answer("🏢 Введіть назву ОСББ (напр. ВП-16):")
-    await state.set_state(ActForm.osbb)
-
-@dp.message(ActForm.osbb)
-async def act_osbb(message: types.Message, state: FSMContext):
-    await state.update_data(osbb=message.text.upper())
-    await message.answer("🗒 Введіть опис робіт:")
-    await state.set_state(ActForm.descr)
-
-@dp.message(ActForm.descr)
-async def act_descr(message: types.Message, state: FSMContext):
-    await state.update_data(descr=message.text)
-    await message.answer("📸 Надішліть ФОТО акту:")
-    await state.set_state(ActForm.file)
-
-@dp.message(ActForm.file, F.photo)
-async def act_file(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    file_id = message.photo[-1].file_id
-    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("INSERT INTO acts (number, osbb, descr, file_id, status) VALUES (?,?,?,?,?)",
-              (data['number'], data['osbb'], data['descr'], file_id, "Очікує"))
+    conn = sqlite3.connect('osbb_acts.db'); cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS acts (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано")')
+    cursor.execute('CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано")')
+    cursor.execute('CREATE TABLE IF NOT EXISTS salaries (id INTEGER PRIMARY KEY AUTOINCREMENT, month_year TEXT, employee TEXT, amount REAL, osbb TEXT, status TEXT DEFAULT "⏳ Очікує")')
     conn.commit(); conn.close()
-    await state.clear()
-    await message.answer("✅ Акт успішно створено!", reply_markup=get_acts_menu(message.from_user.id))
 
-# --- ВІДОБРАЖЕННЯ (АКТИ ТА ЧЕКИ) ---
-@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
-async def show_items(message: types.Message):
-    is_archive = "Архів" in message.text
-    is_acts = "акт" in message.text.lower()
-    table = "acts" if is_acts else "docs"
-    status_filter = "status = 'Завершено'" if is_archive else "status != 'Завершено'"
-    
-    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    
-    if message.from_user.id == CHAIRMAN_ID:
-        c.execute(f"SELECT * FROM {table} WHERE {status_filter} ORDER BY id DESC")
+def get_seasonal_salary():
+    month = datetime.now().month
+    return 4500 if 4 <= month <= 9 else 3500
+
+# --- МЕНЮ ---
+def get_main_menu():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📄 Акти"), KeyboardButton(text="🧾 Чеки ОСББ")], [KeyboardButton(text="💰 Зарплати")]], resize_keyboard=True)
+
+# --- ЛОГІКА КНОПОК АКТІВ ТА ЧЕКІВ ---
+def get_item_kb(item_id, status, table, user_id):
+    btns = []
+    is_ch = (user_id == CHAIRMAN_ID)
+    if table == "acts":
+        if status == "Не отримано":
+            if is_ch: btns.append([InlineKeyboardButton(text="❌ Видалити акт", callback_data=f"del_acts_{item_id}")])
+            else: btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"proc_acts_{item_id}")])
+        elif status == "В роботі":
+            if not is_ch: btns.append([InlineKeyboardButton(text="💳 Оплачено", callback_data=f"pay_acts_{item_id}")])
+        elif status == "Акт оплачений" and is_ch:
+            btns.append([InlineKeyboardButton(text="✅ Завершити", callback_data=f"fin_acts_{item_id}")])
     else:
-        allowed = ACCESS_MAP.get(message.from_user.id, [])
-        c.execute(f"SELECT * FROM {table} WHERE {status_filter} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
-    
-    rows = c.fetchall(); conn.close()
-    if not rows: return await message.answer("📭 Порожньо.")
+        if status == "Не отримано":
+            if is_ch: btns.append([InlineKeyboardButton(text="❌ Видалити PDF", callback_data=f"del_docs_{item_id}")])
+            else: btns.append([InlineKeyboardButton(text="📥 Прийняти чек", callback_data=f"proc_docs_{item_id}")])
+        elif status == "В роботі":
+            if not is_ch: btns.append([InlineKeyboardButton(text="📝 Опрацьовано", callback_data=f"pay_docs_{item_id}")])
+        elif status == "Опрацьовано" and is_ch:
+            btns.append([InlineKeyboardButton(text="✅ Завершити", callback_data=f"fin_docs_{item_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=btns) if btns else None
 
+# --- ЗАРПЛАТИ (ФУНКЦІОНАЛ) ---
+@dp.message(F.text == "💰 Зарплати")
+async def salary_menu(m: types.Message):
+    if m.from_user.id != CHAIRMAN_ID: return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=osbb, callback_data=f"sal_v_{osbb}")] for osbb in STAFF_CONFIG.keys()])
+    await m.answer("Оберіть ОСББ для зарплат:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("sal_v_"))
+async def view_salaries(cb: CallbackQuery):
+    osbb = cb.data.split("_")[2]
+    m_y = datetime.now().strftime("%m.%Y")
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
+    rows = c.fetchall()
+    
+    if not rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Сформувати список", callback_data=f"sal_g_{osbb}")]])
+        await cb.message.edit_text(f"Нарахувань для {osbb} за {m_y} ще немає.", reply_markup=kb)
+        return
+
+    text = f"💰 <b>{osbb} ({m_y})</b>\n\n"
+    btns = []
+    for s_id, emp, amo, stat in rows:
+        text += f"{stat} {emp}: {amo} грн\n"
+        if "Очікує" in stat: btns.append([InlineKeyboardButton(text=f"Видати {emp}", callback_data=f"sal_p_{s_id}")])
+    btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data="sal_back")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("sal_g_"))
+async def gen_salaries(cb: CallbackQuery):
+    osbb = cb.data.split("_")[2]
+    m_y = datetime.now().strftime("%m.%Y")
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    for emp, amo in STAFF_CONFIG[osbb].items():
+        val = get_seasonal_salary() if amo == "seasonal" else amo
+        c.execute("INSERT INTO salaries (month_year, employee, amount, osbb) VALUES (?,?,?,?)", (m_y, emp, val, osbb))
+    conn.commit(); conn.close(); await view_salaries(cb)
+
+@dp.callback_query(F.data.startswith("sal_p_"))
+async def pay_salary(cb: CallbackQuery):
+    s_id = cb.data.split("_")[2]
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("UPDATE salaries SET status='✅ Видано' WHERE id=?", (s_id,))
+    conn.commit(); conn.close(); await view_salaries(cb)
+
+@dp.callback_query(F.data == "sal_back")
+async def sal_back(cb: CallbackQuery):
+    await salary_menu(cb.message); await cb.message.delete()
+
+# --- СТАНДАРТНІ ОБРОБНИКИ (АКТИ, ЧЕКИ) ---
+@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
+async def show_items(m: types.Message):
+    is_arch = "Архів" in m.text; is_acts = "акт" in m.text.lower(); table = "acts" if is_acts else "docs"
+    status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    if m.from_user.id == CHAIRMAN_ID: c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id DESC")
+    else:
+        allowed = ACCESS_MAP.get(m.from_user.id, [])
+        c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
+    rows = c.fetchall(); conn.close()
+    if not rows: return await m.answer("📭 Порожньо.")
     for r in rows:
         if is_acts:
-            # r[1]:номер, r[2]:осбб, r[3]:опис, r[4]:file_id, r[5]:status
-            caption = f"📄 Акт №{r[1]} ({r[2]})\n📝 {r[3]}\n⏳ Статус: {r[5]}"
-            f_id = r[4]
-            try:
-                await bot.send_photo(message.chat.id, f_id, caption=caption)
-            except:
-                await message.answer(f"⚠️ Фото не знайдено:\n{caption}")
+            cap = f"📄 Акт №{r[1]} ({r[2]})\n📝 Опис: {r[3]}\n⏳ Статус: {r[5]}"
+            kb = get_item_kb(r[0], r[5], "acts", m.from_user.id) if not is_arch else None
+            try: await bot.send_photo(m.chat.id, r[4], caption=cap, reply_markup=kb)
+            except: await m.answer(f"⚠️ Фото не знайдено:\n{cap}")
         else:
-            # r[1]:назва, r[2]:осбб, r[3]:file_id, r[4]:status
-            caption = f"🧾 Чек: {r[1]} ({r[2]})\n⏳ Статус: {r[4]}"
-            f_id = r[3]
-            try:
-                await bot.send_document(message.chat.id, f_id, caption=caption)
-            except:
-                await message.answer(f"⚠️ PDF не знайдено:\n{caption}")
+            cap = f"🧾 Чек: {r[1]} ({r[2]})\n⏳ Статус: {r[4]}"
+            kb = get_item_kb(r[0], r[4], "docs", m.from_user.id) if not is_arch else None
+            try: await bot.send_document(m.chat.id, r[3], caption=cap, reply_markup=kb)
+            except: await m.answer(f"⚠️ PDF не знайдено:\n{cap}")
+
+@dp.callback_query(F.data.contains("_") & ~F.data.startswith("sal_"))
+async def handle_items(cb: CallbackQuery):
+    act, table, item_id = cb.data.split("_")
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor(); new_status = None
+    if act == "del": c.execute(f"DELETE FROM {table} WHERE id=?", (item_id,)); await cb.message.delete()
+    elif act == "proc": new_status = "В роботі"; c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+    elif act == "pay":
+        new_status = "Акт оплачений" if table == "acts" else "Опрацьовано"
+        c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+    elif act == "fin":
+        new_status = "Завершено!" if table == "acts" else "Роботу завершено"
+        c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+        await cb.message.delete()
+    conn.commit(); conn.close()
+    if new_status and act != "fin":
+        cap = cb.message.caption.split("⏳")[0] + f"⏳ Статус: {new_status}"
+        await cb.message.edit_caption(caption=cap, reply_markup=get_item_kb(item_id, new_status, table, cb.from_user.id))
+
+# --- ЗАПУСК ---
+@dp.message(F.text == "📄 Акти")
+async def m_acts(m: types.Message): await m.answer("АКТИ", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")], [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+@dp.message(F.text == "🧾 Чеки ОСББ")
+async def m_docs(m: types.Message): await m.answer("ЧЕКИ", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")], [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+@dp.message(F.text == "⬅️ Назад")
+async def m_back(m: types.Message): await m.answer("Меню:", reply_markup=get_main_menu())
 
 async def main():
-    init_db()
-    await dp.start_polling(bot)
+    init_db(); await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
