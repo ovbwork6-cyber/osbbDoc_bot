@@ -125,53 +125,87 @@ async def handle_salaries(cb: CallbackQuery):
     
     conn.close()
 
-# --- СТВОРЕННЯ АКТУ (FSM) ---
+# --- СТВОРЕННЯ АКТУ (FSM з виправленнями) ---
 @dp.message(F.text == "➕ Створити Акт")
 async def act_start(m: types.Message, state: FSMContext):
     if m.from_user.id != CHAIRMAN_ID: return
-    await m.answer("Введіть номер акту:"); await state.set_state(ActForm.number)
+    await m.answer("📝 Крок 1/4: Введіть номер акту (наприклад: 12/03):")
+    await state.set_state(ActForm.number)
 
 @dp.message(ActForm.number)
-async def act_num(m, state):
-    await state.update_data(n=m.text); await m.answer("ОСББ (ВП-16, Е21, ОКПТ, В19):"); await state.set_state(ActForm.osbb)
+async def act_num(m: types.Message, state: FSMContext):
+    await state.update_data(n=m.text)
+    await m.answer("🏠 Крок 2/4: Оберіть ОСББ (ВП-16, Е21, ОКПТ або В19):")
+    await state.set_state(ActForm.osbb)
 
 @dp.message(ActForm.osbb)
-async def act_osbb(m, state):
-    await state.update_data(o=m.text.upper()); await m.answer("Опис робіт:"); await state.set_state(ActForm.descr)
+async def act_osbb(m: types.Message, state: FSMContext):
+    osbb_name = m.text.upper().strip()
+    await state.update_data(o=osbb_name)
+    await m.answer(f"✅ Обрано {osbb_name}. Крок 3/4: Введіть опис робіт:")
+    await state.set_state(ActForm.descr)
 
 @dp.message(ActForm.descr)
-async def act_descr(m, state):
-    await state.update_data(d=m.text); await m.answer("Завантажте фото акту:"); await state.set_state(ActForm.file)
+async def act_descr(m: types.Message, state: FSMContext):
+    await state.update_data(d=m.text)
+    await m.answer("📸 Крок 4/4: Надішліть ФОТО акту (як фото, не файл):")
+    await state.set_state(ActForm.file)
 
 @dp.message(ActForm.file, F.photo)
-async def act_file(m, state):
+async def act_file(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("INSERT INTO acts (number, osbb, descr, file_id) VALUES (?,?,?,?)", (data['n'], data['o'], data['d'], m.photo[-1].file_id))
-    conn.commit(); conn.close(); await state.clear()
-    await m.answer("✅ Акт успішно зареєстровано!", reply_markup=get_main_menu(m.from_user.id))
+    file_id = m.photo[-1].file_id  # Беремо найкращу якість
+    
+    try:
+        conn = sqlite3.connect('osbb_acts.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO acts (number, osbb, descr, file_id, status) VALUES (?,?,?,?,?)", 
+                  (data['n'], data['o'], data['d'], file_id, "Не отримано"))
+        conn.commit()
+        conn.close()
+        await state.clear()
+        await m.answer(f"✅ Акт №{data['n']} збережено і він з'явився у списку 'Поточні акти'.", 
+                       reply_markup=get_main_menu(m.from_user.id))
+    except Exception as e:
+        await m.answer(f"❌ Помилка бази даних: {e}")
 
-# --- СТВОРЕННЯ ЧЕКУ (FSM) ---
+# --- СТВОРЕННЯ ЧЕКУ (FSM з виправленнями) ---
 @dp.message(F.text == "➕ Додати PDF чек")
-async def doc_start(m, state):
+async def doc_start(m: types.Message, state: FSMContext):
     if m.from_user.id != CHAIRMAN_ID: return
-    await m.answer("Назва/Опис чеків:"); await state.set_state(DocForm.name)
+    await m.answer("🧾 Крок 1/3: Назва чеку (наприклад: Оплата світла березень):")
+    await state.set_state(DocForm.name)
 
 @dp.message(DocForm.name)
-async def doc_name(m, state):
-    await state.update_data(n=m.text); await m.answer("ОСББ:"); await state.set_state(DocForm.osbb)
+async def doc_name(m: types.Message, state: FSMContext):
+    await state.update_data(n=m.text)
+    await m.answer("🏠 Крок 2/3: Введіть ОСББ:")
+    await state.set_state(DocForm.osbb)
 
 @dp.message(DocForm.osbb)
-async def doc_osbb(m, state):
-    await state.update_data(o=m.text.upper()); await m.answer("Завантажте PDF файл:"); await state.set_state(DocForm.file)
+async def doc_osbb(m: types.Message, state: FSMContext):
+    await state.update_data(o=m.text.upper().strip())
+    await m.answer("📂 Крок 3/3: Надішліть PDF файл (саме як файл/документ):")
+    await state.set_state(DocForm.file)
 
 @dp.message(DocForm.file, F.document)
-async def doc_file(m, state):
+async def doc_file(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("INSERT INTO docs (name, osbb, file_id) VALUES (?,?,?)", (data['n'], data['o'], m.document.file_id))
-    conn.commit(); conn.close(); await state.clear()
-    await m.answer("✅ PDF файл додано!", reply_markup=get_main_menu(m.from_user.id))
+    if not m.document.mime_type == 'application/pdf':
+        return await m.answer("⚠️ Будь ласка, надішліть саме PDF файл.")
+    
+    try:
+        conn = sqlite3.connect('osbb_acts.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO docs (name, osbb, file_id, status) VALUES (?,?,?,?)", 
+                  (data['n'], data['o'], m.document.file_id, "Не отримано"))
+        conn.commit()
+        conn.close()
+        await state.clear()
+        await m.answer("✅ Чек збережено!", reply_markup=get_main_menu(m.from_user.id))
+    except Exception as e:
+        await m.answer(f"❌ Помилка: {e}")
+
 
 # --- ВІДОБРАЖЕННЯ СПИСКІВ ---
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
