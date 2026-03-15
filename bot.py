@@ -294,7 +294,7 @@ async def process_act_file(message: types.Message, state: FSMContext):
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів"]))
 async def show_acts(message: types.Message):
     is_archive = "Архів" in message.text
-    status_filter = "status = 'Завершено!'" if is_archive else "status != 'Завершено!'"
+    status_filter = "status LIKE 'Завершено%'" if is_archive else "status NOT LIKE 'Завершено%'"
     uid = message.from_user.id
     
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
@@ -387,11 +387,11 @@ async def global_callbacks(callback: CallbackQuery):
     action, _, db_id = callback.data.rpartition("_")
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     
-    if action == "act_acc":
-        c.execute("UPDATE acts SET status='В роботі' WHERE id=?", (db_id,))
-        await bot.send_message(CHAIRMAN_ID, "🔔 Бухгалтер прийняв Акт у роботу.")
-    elif action == "act_paid":
-        c.execute("UPDATE acts SET status='Акт оплачений' WHERE id=?", (db_id,))
+ if action == "act_acc":
+    c.execute("UPDATE acts SET status='В роботі' WHERE id=?", (db_id,))
+    # ... сповіщення голові ...
+elif action == "act_paid":
+    c.execute("UPDATE acts SET status='Акт оплачений' WHERE id=?", (db_id,))
         await bot.send_message(CHAIRMAN_ID, "💰 Акт ОПЛАЧЕНО.")
     elif action == "act_fin": c.execute("UPDATE acts SET status='Завершено!' WHERE id=?", (db_id,))
     elif action == "act_del": c.execute("DELETE FROM acts WHERE id=?", (db_id,))
