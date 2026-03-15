@@ -42,7 +42,8 @@ class DocForm(StatesGroup):
     name, osbb, file = State(), State(), State()
 
 class SalaryEdit(StatesGroup):
-    waiting_for_amount = State(), waiting_for_comment = State()
+    waiting_for_amount = State()
+    waiting_for_comment = State()
 
 # --- БАЗА ДАНИХ ---
 def init_db():
