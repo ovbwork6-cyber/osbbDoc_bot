@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import asyncio
+import zipfile
+import io
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -184,7 +186,48 @@ async def handle_items_confirmed(cb: CallbackQuery):
             cap = cb.message.caption.split("⏳")[0] + f"⏳ Статус: {new_status}"
             await cb.message.edit_caption(caption=cap, reply_markup=get_item_kb(item_id, new_status, table, cb.from_user.id))
 
-# --- РЕШТА ФУНКЦІЙ (АКТИ/ЧЕКИ/СТАРТ) ---
+# --- ZIP АРХІВАТОР ---
+@dp.message(F.text == "📦 ZIP Архів")
+async def zip_report_menu(m: types.Message):
+    if m.from_user.id != CHAIRMAN_ID: return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=osbb, callback_data=f"zip_{osbb}")] for osbb in STAFF_CONFIG.keys()])
+    await m.answer("Оберіть ОСББ для вивантаження архіву 2026:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("zip_"))
+async def send_zip(cb: CallbackQuery):
+    osbb = cb.data.split("_")[1]
+    await cb.answer("📦 Готую архів...")
+    
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("SELECT number, file_id FROM acts WHERE osbb=? AND status='Завершено!'", (osbb,))
+    acts = c.fetchall()
+    c.execute("SELECT name, file_id FROM docs WHERE osbb=? AND status='Роботу завершено'", (osbb,))
+    docs = c.fetchall()
+    conn.close()
+
+    if not acts and not docs:
+        return await cb.message.answer(f"❌ В архіві {osbb} немає закритих документів.")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
+        for num, f_id in acts:
+            try:
+                file = await bot.get_file(f_id)
+                file_data = await bot.download_file(file.file_path)
+                zip_file.writestr(f"Акти/Акт_№{num}.jpg", file_data.read())
+            except: continue
+        for name, f_id in docs:
+            try:
+                file = await bot.get_file(f_id)
+                file_data = await bot.download_file(file.file_path)
+                zip_file.writestr(f"Чеки/{name}.pdf", file_data.read())
+            except: continue
+
+    zip_buffer.seek(0)
+    document = types.BufferedInputFile(zip_buffer.read(), filename=f"Archive_{osbb}_2026.zip")
+    await bot.send_document(cb.message.chat.id, document, caption=f"✅ Повний архів {osbb}")
+
+# --- РЕШТА ФУНКЦІЙ ---
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext): 
     await state.clear(); await m.answer("👋 Система готова.", reply_markup=get_main_menu())
@@ -194,6 +237,7 @@ async def show_items(m: types.Message):
     is_arch = "Архів" in m.text; is_acts = "акт" in m.text.lower(); table = "acts" if is_acts else "docs"
     status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    # Сортування ASC - старі спочатку, нові в кінці списку
     if m.from_user.id == CHAIRMAN_ID: c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
     else:
         allowed = ACCESS_MAP.get(m.from_user.id, [])
@@ -213,15 +257,28 @@ async def show_items(m: types.Message):
             except: pass
 
 @dp.message(F.text == "📄 Акти")
-async def m_acts(m: types.Message): await m.answer("АКТИ", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")], [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+async def m_acts(m: types.Message): 
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
+        [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="📦 ZIP Архів")],
+        [KeyboardButton(text="⬅️ Назад")]
+    ], resize_keyboard=True)
+    await m.answer("АКТИ", reply_markup=kb)
+
 @dp.message(F.text == "🧾 Чеки ОСББ")
-async def m_docs(m: types.Message): await m.answer("ЧЕКИ", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")], [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True))
+async def m_docs(m: types.Message): 
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
+        [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="⬅️ Назад")]
+    ], resize_keyboard=True)
+    await m.answer("ЧЕКИ", reply_markup=kb)
+
 @dp.message(F.text == "⬅️ Назад")
 async def m_back(m: types.Message): await m.answer("Головне меню:", reply_markup=get_main_menu())
 @dp.callback_query(F.data == "sal_back")
 async def s_back(cb: CallbackQuery): await salary_menu(cb.message); await cb.message.delete()
 
-# --- РЕЄСТРАЦІЯ АКТІВ (ПОЛАГОДЖЕНО) ---
+# --- РЕЄСТРАЦІЯ (FSM) ---
 @dp.message(F.text == "➕ Створити Акт")
 async def start_a(m: types.Message, state: FSMContext): 
     if m.from_user.id == CHAIRMAN_ID: 
@@ -245,7 +302,6 @@ async def a_f(m: types.Message, state: FSMContext):
     c.execute("INSERT INTO acts (number, osbb, descr, file_id) VALUES (?,?,?,?)", (d['n'], d['o'], d['d'], m.photo[-1].file_id))
     conn.commit(); conn.close(); await state.clear(); await m.answer("✅ Акт зареєстровано")
 
-# --- РЕЄСТРАЦІЯ ЧЕКІВ ---
 @dp.message(F.text == "➕ Додати PDF чек")
 async def start_d(m: types.Message, state: FSMContext):
     if m.from_user.id == CHAIRMAN_ID: 
