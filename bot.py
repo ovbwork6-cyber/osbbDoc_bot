@@ -101,7 +101,7 @@ async def view_salaries_options(cb: CallbackQuery):
 async def view_salary_history(cb: CallbackQuery):
     osbb = cb.data.split("_")[2]
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("SELECT DISTINCT month_year FROM salaries WHERE osbb=? ORDER BY id DESC", (osbb,))
+    c.execute("SELECT DISTINCT month_year FROM salaries WHERE osbb=? ORDER BY id ASC", (osbb,))
     months = c.fetchall(); conn.close()
     if not months: return await cb.answer("Історія порожня", show_alert=True)
     btns = [[InlineKeyboardButton(text=m[0], callback_data=f"sal_list_{osbb}_{m[0]}")] for m in months]
@@ -194,10 +194,10 @@ async def show_items(m: types.Message):
     is_arch = "Архів" in m.text; is_acts = "акт" in m.text.lower(); table = "acts" if is_acts else "docs"
     status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    if m.from_user.id == CHAIRMAN_ID: c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id DESC")
+    if m.from_user.id == CHAIRMAN_ID: c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
     else:
         allowed = ACCESS_MAP.get(m.from_user.id, [])
-        c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id DESC", allowed)
+        c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id ASC", allowed)
     rows = c.fetchall(); conn.close()
     if not rows: return await m.answer("📭 Порожньо.")
     for r in rows:
