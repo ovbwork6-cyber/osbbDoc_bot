@@ -111,9 +111,10 @@ async def view_salary_history(cb: CallbackQuery):
     await cb.message.edit_text(f"Архів <b>{osbb}</b>:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btns), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("sal_list_"))
-async def show_salary_list(cb: CallbackQuery):
-    parts = cb.data.split("_")
-    osbb, m_y = parts[2], parts[3]
+async def show_salary_list(cb: CallbackQuery, osbb: str = None, m_y: str = None):
+    if not osbb or not m_y:
+        parts = cb.data.split("_")
+        osbb, m_y = parts[2], parts[3]
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     c.execute("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
     rows = c.fetchall(); conn.close()
@@ -142,7 +143,7 @@ async def gen_salaries(cb: CallbackQuery):
             val = get_seasonal_salary() if amo == "seasonal" else amo
             c.execute("INSERT INTO salaries (month_year, employee, amount, osbb) VALUES (?,?,?,?)", (m_y, emp, val, osbb))
         conn.commit()
-    conn.close(); cb.data = f"sal_list_{osbb}_{m_y}"; await show_salary_list(cb)
+    conn.close(); await show_salary_list(cb, osbb, m_y)
 
 @dp.callback_query(F.data.startswith("sal_p_"))
 async def toggle_salary(cb: CallbackQuery):
@@ -152,7 +153,7 @@ async def toggle_salary(cb: CallbackQuery):
     c.execute("SELECT status FROM salaries WHERE id=?", (s_id,))
     new_stat = "⏳ Очікує" if c.fetchone()[0] == "✅ Видано" else "✅ Видано"
     c.execute("UPDATE salaries SET status=? WHERE id=?", (new_stat, s_id))
-    conn.commit(); conn.close(); cb.data = f"sal_list_{osbb}_{m_y}"; await show_salary_list(cb)
+    conn.commit(); conn.close(); await show_salary_list(cb, osbb, m_y)
 
 # --- ПІДТВЕРДЖЕННЯ ДІЙ (АКТИ/ЧЕКИ) ---
 @dp.callback_query(F.data.startswith(("conf_", "yes_", "no_")))
