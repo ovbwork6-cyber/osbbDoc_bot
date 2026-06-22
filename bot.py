@@ -55,12 +55,10 @@ class JobCommentForm(StatesGroup):
 # --- ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ ---
 def init_db():
     conn = sqlite3.connect('osbb_acts.db'); cursor = conn.cursor()
-    # Додано created_at для фільтрації за періодами
     cursor.execute('CREATE TABLE IF NOT EXISTS acts (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано", created_at TEXT)')
     cursor.execute('CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано", created_at TEXT)')
     cursor.execute('CREATE TABLE IF NOT EXISTS salaries (id INTEGER PRIMARY KEY AUTOINCREMENT, month_year TEXT, employee TEXT, amount REAL, osbb TEXT, status TEXT DEFAULT "⏳ Очікує")')
     
-    # Таблиця для Плану Робіт
     cursor.execute('''CREATE TABLE IF NOT EXISTS jobs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         osbb TEXT, 
@@ -73,7 +71,6 @@ def init_db():
         created_at TEXT
     )''')
     
-    # Міграція: перевірка наявності колонки created_at у старих базах
     try:
         cursor.execute("ALTER TABLE acts ADD COLUMN created_at TEXT")
     except: pass
@@ -99,15 +96,12 @@ def get_main_menu():
 def get_period_keyboard(prefix: str, osbb: str, year: str = None):
     kb = []
     if not year:
-        # Вибір року (поточний та попередній)
         cy = datetime.now().year
         kb.append([InlineKeyboardButton(text=str(cy), callback_data=f"{prefix}_yr_{osbb}_{cy}")])
         kb.append([InlineKeyboardButton(text=str(cy-1), callback_data=f"{prefix}_yr_{osbb}_{cy-1}")])
         kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu_back")])
     else:
-        # Вибір періоду в межах року
         kb.append([InlineKeyboardButton(text="📅 Цілий рік", callback_data=f"{prefix}_fin_{osbb}_{year}_all")])
-        # Рядки з місяцями (по 2 в ряд)
         row = []
         for m_num, m_name in MONTHS_UA.items():
             row.append(InlineKeyboardButton(text=m_name, callback_data=f"{prefix}_fin_{osbb}_{year}_{m_num}"))
@@ -343,7 +337,7 @@ async def send_filtered_zip(cb: CallbackQuery):
     await bot.send_document(cb.message.chat.id, document, caption=f"✅ Згенеровано архів {osbb} за період: {period_title}")
 
 
-# --- НОВИЙ МОДУЛЬ: ПЛАН РОБІТ ---
+# --- МОДУЛЬ: ПЛАН РОБІТ ---
 @dp.message(F.text == "🛠️ План робіт")
 async def jobs_main_menu(m: types.Message, state: FSMContext):
     await state.clear()
@@ -364,7 +358,6 @@ async def job_add_start(m: types.Message, state: FSMContext):
 async def job_add_osbb(cb: CallbackQuery, state: FSMContext):
     osbb = cb.data.split("_")[2]
     await state.update_data(osbb=osbb)
-    # Кнопки вибору місяця
     kb = []
     row = []
     for m_num, m_name in MONTHS_UA.items():
@@ -398,7 +391,6 @@ async def job_add_save(m: types.Message, state: FSMContext):
 # Перегляд поточних робіт
 @dp.message(F.text == "📋 Поточні роботи")
 async def current_jobs_start(m: types.Message):
-    # Доступ мають адмін або з ACCESS_MAP
     allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID else ACCESS_MAP.get(m.from_user.id, [])
     if not allowed_osbb: return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=o, callback_data=f"jview_curr_{o}")] for o in allowed_osbb])
@@ -422,7 +414,6 @@ async def show_current_jobs(cb: CallbackQuery):
         if stages: msg_text += f"🧱 <b>Етапи виконання:</b>\n{stages}\n"
         if comm: msg_text += f"💬 <b>Коментарі/нотатки:</b>\n{comm}"
         
-        # Кнопки взаємодії
         kb = []
         is_ch = (cb.from_user.id == CHAIRMAN_ID)
         
@@ -527,7 +518,7 @@ async def show_finished_jobs_results(cb: CallbackQuery):
         await cb.message.answer(m_txt, parse_mode="HTML")
 
 
-# --- НОВИЙ МОДУЛЬ: АВТОМАТИЧНІ ЗВІТИ (ПРОЗВІТУВАТИ) ---
+# --- МОДУЛЬ: АВТОМАТИЧНІ ЧИСТІ ЗВІТИ (ПРОЗВІТУВАТИ) ---
 @dp.message(F.text == "📊 Прозвітувати")
 async def report_main_menu(m: types.Message):
     if m.from_user.id != CHAIRMAN_ID: return
@@ -575,7 +566,7 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     
     conn.close()
 
-    # Генерація тексту звіту
+    # Генерація тексту звіту БЕЗ СИРИХ file_id
     report = f"==================================================\n"
     report += f"     ФІНАНСОВО-ГОСПОДАРСЬКИЙ ЗВІТ ДЛЯ {osbb}\n"
     report += f"     ПЕРІОД: {p_title.upper()}\n"
@@ -589,7 +580,7 @@ async def generate_and_send_report_file(cb: CallbackQuery):
         for num, descr, f_id, stat, date in acts:
             report += f"• Акт №{num} від [{date}] | Статус: {stat}\n"
             report += f"  Опис: {descr}\n"
-            report += f"  🔗 Посилання на документ (Telegram ID): {f_id}\n\n"
+            report += f"  📂 Файл в архіві: Акти/Акт_№{num}.jpg\n\n"
     else:
         report += "Записів за вказаний період немає.\n\n"
 
@@ -599,7 +590,7 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     if docs:
         for name, f_id, stat, date in docs:
             report += f"• Документ: {name} від [{date}] | Статус: {stat}\n"
-            report += f"  🔗 Посилання на файл (Telegram ID): {f_id}\n\n"
+            report += f"  📂 Файл в архіві: Чеки/{name}.pdf\n\n"
     else:
         report += "Чеки за вказаний період відсутні.\n\n"
 
@@ -632,14 +623,34 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     report += f"\n==================================================\n"
     report += f"Кінець звіту. Документ сформовано автоматично.\n"
 
-    # Конвертація в байт-файл та надсилання
+    # 1. Надсилаємо красивий текстовий файл з розрахунками (.txt)
     report_file = io.BytesIO(report.encode('utf-8'))
-    document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
-    
-    await bot.send_document(cb.message.chat.id, document, caption=f"📄 Готовий фінансовий звіт {osbb} за {p_title}")
+    txt_document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
+    await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Фінансовий звіт {osbb} за {p_title}")
+
+    # 2. Одночасно автоматично збираємо і додаємо ZIP-архів з первинними документами
+    if acts or docs:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
+            for num, f_id in acts:
+                try:
+                    file = await bot.get_file(f_id)
+                    file_data = await bot.download_file(file.file_path)
+                    zip_file.writestr(f"Акти/Акт_№{num}.jpg", file_data.read())
+                except: continue
+            for name, f_id in docs:
+                try:
+                    file = await bot.get_file(f_id)
+                    file_data = await bot.download_file(file.file_path)
+                    zip_file.writestr(f"Чеки/{name}.pdf", file_data.read())
+                except: continue
+
+        zip_buffer.seek(0)
+        zip_document = types.BufferedInputFile(zip_buffer.read(), filename=f"Documents_{osbb}_{period}_{year}.zip")
+        await bot.send_document(cb.message.chat.id, zip_document, caption=f"📦 Підтверджуючі первинні документи (Архів) за {p_title}")
 
 
-# --- РЕШТА СТАРИХ ФУНКЦІЙ МЕНЮ (З ОЧИЩЕННЯМ СТАНУ) ---
+# --- РЕШТА ФУНКЦІЙ МЕНЮ (З ОЧИЩЕННЯМ СТАНУ) ---
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext): 
     await state.clear(); await m.answer("👋 Система готова.", reply_markup=get_main_menu())
@@ -649,7 +660,6 @@ async def show_items(m: types.Message, state: FSMContext):
     await state.clear()
     is_arch = "Архів" in m.text; is_acts = "акт" in m.text.lower(); table = "acts" if is_acts else "docs"
     
-    # Якщо це архів актів — відкриваємо нове гнучке меню замість старого виведення всього списку
     if is_arch and is_acts:
         allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID else ACCESS_MAP.get(m.from_user.id, [])
         if not allowed_osbb: return
@@ -729,7 +739,7 @@ async def a_d(m: types.Message, state: FSMContext):
 @dp.message(ActForm.file, F.photo)
 async def a_f(m: types.Message, state: FSMContext):
     d = await state.get_data()
-    today = datetime.now().strftime("%Y-%m-%d") # Автоматичний запис дати створення
+    today = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     c.execute("INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)", (d['n'], d['o'], d['d'], m.photo[-1].file_id, today))
     conn.commit(); conn.close(); await state.clear(); await m.answer("✅ Акт зареєстровано")
