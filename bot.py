@@ -651,7 +651,7 @@ async def show_items(m: types.Message, state: FSMContext):
     
     # Якщо це архів актів — відкриваємо нове гнучке меню замість старого виведення всього списку
     if is_arch and is_acts:
-        allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID : else ACCESS_MAP.get(m.from_user.id, [])
+        allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID else ACCESS_MAP.get(m.from_user.id, [])
         if not allowed_osbb: return
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=o, callback_data=f"arch_acts_v_{o}")] for o in allowed_osbb])
         return await m.answer("Оберіть ОСББ для перегляду архіву актів:", reply_markup=kb)
