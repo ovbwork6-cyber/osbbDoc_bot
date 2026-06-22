@@ -11,7 +11,7 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup, 
-                            CallbackQuery, ReplyKeyboardMarkup, KeyboardButton)
+                           CallbackQuery, ReplyKeyboardMarkup, KeyboardButton)
 
 # --- НАЛАШТУВАННЯ ---
 load_dotenv()
@@ -84,7 +84,8 @@ def get_item_kb(item_id, status, table, user_id):
 
 # --- ЗАРПЛАТИ (З АРХІВОМ ТА TOGGLE) ---
 @dp.message(F.text == "💰 Зарплати")
-async def salary_menu(m: types.Message):
+async def salary_menu(m: types.Message, state: FSMContext):
+    await state.clear()
     if m.from_user.id != CHAIRMAN_ID: return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=osbb, callback_data=f"sal_v_{osbb}")] for osbb in STAFF_CONFIG.keys()])
     await m.answer("Оберіть ОСББ для зарплат:", reply_markup=kb)
@@ -189,7 +190,8 @@ async def handle_items_confirmed(cb: CallbackQuery):
 
 # --- ZIP АРХІВАТОР ---
 @dp.message(F.text == "📦 ZIP Архів")
-async def zip_report_menu(m: types.Message):
+async def zip_report_menu(m: types.Message, state: FSMContext):
+    await state.clear()
     if m.from_user.id != CHAIRMAN_ID: return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=osbb, callback_data=f"zip_{osbb}")] for osbb in STAFF_CONFIG.keys()])
     await m.answer("Оберіть ОСББ для вивантаження архіву 2026:", reply_markup=kb)
@@ -234,7 +236,8 @@ async def cmd_start(m: types.Message, state: FSMContext):
     await state.clear(); await m.answer("👋 Система готова.", reply_markup=get_main_menu())
 
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
-async def show_items(m: types.Message):
+async def show_items(m: types.Message, state: FSMContext):
+    await state.clear()
     is_arch = "Архів" in m.text; is_acts = "акт" in m.text.lower(); table = "acts" if is_acts else "docs"
     status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
@@ -258,7 +261,8 @@ async def show_items(m: types.Message):
             except: pass
 
 @dp.message(F.text == "📄 Акти")
-async def m_acts(m: types.Message): 
+async def m_acts(m: types.Message, state: FSMContext): 
+    await state.clear()
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
         [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="📦 ZIP Архів")],
@@ -267,7 +271,8 @@ async def m_acts(m: types.Message):
     await m.answer("АКТИ", reply_markup=kb)
 
 @dp.message(F.text == "🧾 Чеки ОСББ")
-async def m_docs(m: types.Message): 
+async def m_docs(m: types.Message, state: FSMContext): 
+    await state.clear()
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
         [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="⬅️ Назад")]
@@ -275,9 +280,13 @@ async def m_docs(m: types.Message):
     await m.answer("ЧЕКИ", reply_markup=kb)
 
 @dp.message(F.text == "⬅️ Назад")
-async def m_back(m: types.Message): await m.answer("Головне меню:", reply_markup=get_main_menu())
+async def m_back(m: types.Message, state: FSMContext): 
+    await state.clear()
+    await m.answer("Головне меню:", reply_markup=get_main_menu())
+
 @dp.callback_query(F.data == "sal_back")
-async def s_back(cb: CallbackQuery): await salary_menu(cb.message); await cb.message.delete()
+async def s_back(cb: CallbackQuery): 
+    await salary_menu(cb.message); await cb.message.delete()
 
 # --- РЕЄСТРАЦІЯ (FSM) ---
 @dp.message(F.text == "➕ Створити Акт")
@@ -295,7 +304,7 @@ async def a_o(m: types.Message, state: FSMContext):
 
 @dp.message(ActForm.descr)
 async def a_d(m: types.Message, state: FSMContext):
-    await state.update_data(d=m.text); await m.answer("Завантажте фото:"); await state.set_state(ActForm.file)
+    await state.update_data(d=m.text); await m.answer("Завантажте photo:"); await state.set_state(ActForm.file)
 
 @dp.message(ActForm.file, F.photo)
 async def a_f(m: types.Message, state: FSMContext):
