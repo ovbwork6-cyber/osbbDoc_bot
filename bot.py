@@ -349,8 +349,12 @@ def get_job_card_markup(j_id, status, user_id):
         if is_ch:
             kb.append([InlineKeyboardButton(text="❌ Видалити задачу", callback_data=f"jact_del_{j_id}")])
     elif status == "В роботі":
-        kb.append([InlineKeyboardButton(text="🧱 Додати етап", callback_data=f"jact_stage_{j_id}")])
-        kb.append([InlineKeyboardButton(text="💬 Написати коментар", callback_data=f"jact_comm_{j_id}")])
+        # Ряд 1: Додавання проміжних даних
+        kb.append([
+            InlineKeyboardButton(text="🧱 Додати етап", callback_data=f"jact_stage_{j_id}"),
+            InlineKeyboardButton(text="💬 Коментар", callback_data=f"jact_comm_{j_id}")
+        ])
+        # Ряд 2: Кнопка завершення (завжди окремим рядком, щоб не зникала)
         kb.append([InlineKeyboardButton(text="🏁 Роботу закінчено", callback_data=f"jact_fin_{j_id}")])
         
     return InlineKeyboardMarkup(inline_keyboard=kb) if kb else None
