@@ -50,7 +50,9 @@ class JobForm(StatesGroup):
     osbb, month, text = State(), State(), State()
 
 class JobCommentForm(StatesGroup):
-    job_id, text = State(), State()
+    job_id = State()
+    mode = State()
+    text = State()
 
 # --- ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ ---
 def init_db():
@@ -243,7 +245,7 @@ async def handle_items_confirmed(cb: CallbackQuery):
             cap = cb.message.caption.split("⏳")[0] + f"⏳ Status: {new_status}"
             await cb.message.edit_caption(caption=cap, reply_markup=get_item_kb(item_id, new_status, table, cb.from_user.id))
 
-# --- ОНОВЛЕНЕ МЕНЮ АРХІВУ АКТІВ ТА КНОПКА З БОРТУ ---
+# --- АРХІВ АКТІВ ПЕРІОДИ ---
 @dp.callback_query(F.data.startswith("arch_acts_v_"))
 async def act_arch_years(cb: CallbackQuery):
     osbb = cb.data.split("_")[3]
@@ -279,7 +281,7 @@ async def show_archived_acts_by_period(cb: CallbackQuery):
         try: await bot.send_photo(cb.message.chat.id, r[4], caption=cap)
         except: pass
 
-# --- ОНОВЛЕНИЙ ZIP АРХІВАТОР З КОНКРЕТНИМИ ПЕРІОДАМИ ---
+# --- ZIP АРХІВАТОР З ПЕРІОДАМИ ---
 @dp.message(F.text == "📦 ZIP Архів")
 async def zip_report_menu(m: types.Message, state: FSMContext):
     await state.clear()
@@ -337,7 +339,39 @@ async def send_filtered_zip(cb: CallbackQuery):
     await bot.send_document(cb.message.chat.id, document, caption=f"✅ Згенеровано архів {osbb} за період: {period_title}")
 
 
-# --- МОДУЛЬ: ПЛАН РОБІТ ---
+# --- МОДУЛЬ: ПЛАН РОБІТ (ОПТИМІЗОВАНИЙ І ВИПРАВЛЕНИЙ) ---
+def get_job_card_markup(j_id, status, user_id):
+    kb = []
+    is_ch = (user_id == CHAIRMAN_ID)
+    
+    if status == "Створено":
+        # Виправлено: голова/адмін тепер БАЧИТЬ обидві кнопки і може приймати в роботу
+        kb.append([InlineKeyboardButton(text="📥 Прийняти в роботу", callback_data=f"jact_proc_{j_id}")])
+        if is_ch:
+            kb.append([InlineKeyboardButton(text="❌ Видалити задачу", callback_data=f"jact_del_{j_id}")])
+    elif status == "В роботі":
+        kb.append([InlineKeyboardButton(text="🧱 Додати етап", callback_data=f"jact_stage_{j_id}")])
+        kb.append([InlineKeyboardButton(text="💬 Написати коментар", callback_data=f"jact_comm_{j_id}")])
+        kb.append([InlineKeyboardButton(text="🏁 Роботу закінчено", callback_data=f"jact_fin_{j_id}")])
+        
+    return InlineKeyboardMarkup(inline_keyboard=kb) if kb else None
+
+async def render_job_text_and_kb(j_id, user_id):
+    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
+    c.execute("SELECT osbb, month_year, task_text, status, stages, comments FROM jobs WHERE id=?", (j_id,))
+    row = c.fetchone(); conn.close()
+    if not row: return None, None
+    
+    osbb, m_y, text, stat, stages, comm = row
+    msg_text = f"🛠️ <b>Завдання ОСББ {osbb} ({m_y})</b>\n" \
+               f"📝 <b>Задача:</b> {text}\n" \
+               f"📊 <b>Статус:</b> <code>{stat}</code>\n"
+    if stages: msg_text += f"\n🧱 <b>Етапи виконання:</b>\n{stages}"
+    if comm: msg_text += f"\n💬 <b>Коментарі/нотатки:</b>\n{comm}"
+    
+    markup = get_job_card_markup(j_id, stat, user_id)
+    return msg_text, markup
+
 @dp.message(F.text == "🛠️ План робіт")
 async def jobs_main_menu(m: types.Message, state: FSMContext):
     await state.clear()
@@ -347,7 +381,6 @@ async def jobs_main_menu(m: types.Message, state: FSMContext):
     ], resize_keyboard=True)
     await m.answer("🛠️ <b>Керування планом робіт по ОСББ:</b>", reply_markup=kb, parse_mode="HTML")
 
-# Додавання роботи
 @dp.message(F.text == "➕ Добавити роботу")
 async def job_add_start(m: types.Message, state: FSMContext):
     if m.from_user.id != CHAIRMAN_ID: return
@@ -388,7 +421,6 @@ async def job_add_save(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("✅ Задача успішно додана в план робіт!", reply_markup=get_main_menu())
 
-# Перегляд поточних робіт
 @dp.message(F.text == "📋 Поточні роботи")
 async def current_jobs_start(m: types.Message):
     allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID else ACCESS_MAP.get(m.from_user.id, [])
@@ -400,57 +432,53 @@ async def current_jobs_start(m: types.Message):
 async def show_current_jobs(cb: CallbackQuery):
     osbb = cb.data.split("_")[2]
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    c.execute("SELECT id, month_year, task_text, status, stages, comments FROM jobs WHERE osbb=? AND status != 'Роботу закінчено' ORDER BY id DESC", (osbb,))
-    rows = c.fetchall(); conn.close()
+    c.execute("SELECT id FROM jobs WHERE osbb=? AND status != 'Роботу закінчено' ORDER BY id DESC", (osbb,))
+    ids = c.fetchall(); conn.close()
     
-    if not rows:
+    if not ids:
         return await cb.message.edit_text(f"📭 Активних (поточних) робіт по {osbb} немає.")
         
     await cb.message.delete()
-    for j_id, m_y, text, stat, stages, comm in rows:
-        msg_text = f"🛠️ <b>Завдання ОСББ {osbb} ({m_y})</b>\n" \
-                   f"📝 <b>Задача:</b> {text}\n" \
-                   f"📊 <b>Статус:</b> <code>{stat}</code>\n"
-        if stages: msg_text += f"🧱 <b>Етапи виконання:</b>\n{stages}\n"
-        if comm: msg_text += f"💬 <b>Коментарі/нотатки:</b>\n{comm}"
-        
-        kb = []
-        is_ch = (cb.from_user.id == CHAIRMAN_ID)
-        
-        if stat == "Створено":
-            if not is_ch: kb.append([InlineKeyboardButton(text="📥 Прийняти в роботу", callback_data=f"jact_proc_{j_id}")])
-            if is_ch: kb.append([InlineKeyboardButton(text="❌ Видалити задачу", callback_data=f"jact_del_{j_id}")])
-        elif stat == "В роботі":
-            kb.append([InlineKeyboardButton(text="🧱 Додати етап", callback_data=f"jact_stage_{j_id}")])
-            kb.append([InlineKeyboardButton(text="💬 Написати коментар", callback_data=f"jact_comm_{j_id}")])
-            if not is_ch: kb.append([InlineKeyboardButton(text="🏁 Роботу закінчено", callback_data=f"jact_fin_{j_id}")])
-            
-        await cb.message.answer(msg_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb) if kb else None, parse_mode="HTML")
+    for row in ids:
+        j_id = row[0]
+        msg_text, markup = await render_job_text_and_kb(j_id, cb.from_user.id)
+        if msg_text:
+            await cb.message.answer(msg_text, reply_markup=markup, parse_mode="HTML")
 
-# Обробка дій з завданнями
 @dp.callback_query(F.data.startswith("jact_"))
 async def handle_job_action(cb: CallbackQuery, state: FSMContext):
     p = cb.data.split("_")
     action, j_id = p[1], int(p[2])
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    
     if action == "del":
+        conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
         c.execute("DELETE FROM jobs WHERE id=?", (j_id,))
-        conn.commit(); conn.close(); await cb.message.delete(); await cb.answer("Видалено")
+        conn.commit(); conn.close()
+        await cb.message.delete(); return await cb.answer("Видалено")
+        
     elif action == "proc":
+        conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
         c.execute("UPDATE jobs SET status='В роботі', updated_at=? WHERE id=?", (now_str, j_id))
-        conn.commit(); conn.close(); await cb.answer("Взято в роботу!"); await current_jobs_start(cb.message)
+        conn.commit(); conn.close()
+        await cb.answer("Взято в роботу!")
+        # Виправлено: динамічно оновлюємо картку замість спаму новими повідомленнями
+        msg_text, markup = await render_job_text_and_kb(j_id, cb.from_user.id)
+        if msg_text: await cb.message.edit_text(msg_text, reply_markup=markup, parse_mode="HTML")
+        
     elif action == "fin":
+        conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
         c.execute("UPDATE jobs SET status='Роботу закінчено', updated_at=? WHERE id=?", (now_str, j_id))
-        conn.commit(); conn.close(); await cb.answer("Завершено!"); await cb.message.delete()
+        conn.commit(); conn.close()
+        await cb.answer("Роботу успішно закрито!")
+        await cb.message.delete()
+        
     elif action in ["stage", "comm"]:
         await state.update_data(j_id=j_id, mode=action)
         await state.set_state(JobCommentForm.text)
         txt = "Введіть назву етапу виконання:" if action == "stage" else "Введіть ваш коментар/зауваження до роботи:"
-        await cb.message.answer(f"✍️ {txt}")
-        conn.close()
+        await cb.message.answer(f"✍ *{txt}*")
+        await cb.answer()
 
 @dp.message(JobCommentForm.text)
 async def save_job_stage_or_comment(m: types.Message, state: FSMContext):
@@ -547,33 +575,28 @@ async def generate_and_send_report_file(cb: CallbackQuery):
 
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
     
-    # 1. АКТИ ЗА ПЕРІОД
     c.execute("SELECT number, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
     acts = c.fetchall()
     
-    # 2. ЧЕКИ ЗА ПЕРІОД
     c.execute("SELECT name, file_id, status, created_at FROM docs WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
     docs = c.fetchall()
     
-    # 3. ЗАРПЛАТИ (Фільтр по назві місяця)
     sal_pattern = f"%.{year}" if period == "all" else f"{period}.{year}"
     c.execute("SELECT month_year, employee, amount, status FROM salaries WHERE osbb=? AND month_year LIKE ?", (osbb, sal_pattern))
     salaries = c.fetchall()
     
-    # 4. ВИКОНАНІ РОБОТИ ЗА ПЕРІОД
-    c.execute("SELECT task_text, stages, comments, updated_at FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
+    # Виправлено: Тепер з бази тягнуться коментарі та етапи для коректного логування у звіті!
+    c.execute("SELECT task_text, stages, comments, updated_at, month_year FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
     jobs = c.fetchall()
     
     conn.close()
 
-    # Генерація тексту звіту БЕЗ СИРИХ file_id
     report = f"==================================================\n"
     report += f"     ФІНАНСОВО-ГОСПОДАРСЬКИЙ ЗВІТ ДЛЯ {osbb}\n"
     report += f"     ПЕРІОД: {p_title.upper()}\n"
     report += f"     Дата генерації: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
     report += f"==================================================\n\n"
 
-    # Секція 1: Акти виконаних робіт
     report += f"📋 1. АКТИ ВИКОНАНИХ РОБІТ (Всього знайдено: {len(acts)})\n"
     report += f"--------------------------------------------------\n"
     if acts:
@@ -584,7 +607,6 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     else:
         report += "Записів за вказаний період немає.\n\n"
 
-    # Секція 2: Чеки та ПДФ документи
     report += f"🧾 2. ДОКУМЕНТИ ТА ЧЕКИ ВИТРАТ (Всього знайдено: {len(docs)})\n"
     report += f"--------------------------------------------------\n"
     if docs:
@@ -594,7 +616,6 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     else:
         report += "Чеки за вказаний період відсутні.\n\n"
 
-    # Секція 3: Виплати заробітної плати
     report += f"💰 3. ВІДОМІСТЬ НАРАХУВАННЯ ТА ВИПЛАТИ ЗАРПЛАТ\n"
     report += f"--------------------------------------------------\n"
     total_sal = 0
@@ -607,15 +628,14 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     else:
         report += "Дані про виплату заробітної плати відсутні.\n\n"
 
-    # Секція 4: Виконані господарські роботи
-    report += f"🛠️ 4. ГОСПОДАРСЬКІ РОБОТИ (ЗАКРИТІ ЗАДАЧІ)\n"
+    report += f"🛠️ 4. ГОСПОДАРСЬКІ РОБОТИ (ЗАКРИТІ ЗАДАЧІ ЗА ПЕРІОД)\n"
     report += f"--------------------------------------------------\n"
     if jobs:
-        for text, stages, comm, u_at in jobs:
-            report += f"• Задача: {text}\n"
-            report += f"  Дата завершення: {u_at}\n"
-            if stages: report += f"  🧱 Пройдені етапи:\n{stages}"
-            if comm: report += f"  💬 Фінальні коментарі:\n{comm}"
+        for text, stages, comm, u_at, m_y in jobs:
+            report += f"• Задача (план на {m_y}): {text}\n"
+            report += f"  📆 Дата фінального закриття: {u_at}\n"
+            if stages: report += f"  🧱 Пройдені технічні етапи:\n{stages}"
+            if comm: report += f"  💬 Лог коментарів/нотаток:\n{comm}"
             report += f"--------------------------------------------------\n"
     else:
         report += "У звітному періоді виконаних завдань немає.\n\n"
@@ -623,12 +643,10 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     report += f"\n==================================================\n"
     report += f"Кінець звіту. Документ сформовано автоматично.\n"
 
-    # 1. Надсилаємо красивий текстовий файл з розрахунками (.txt)
     report_file = io.BytesIO(report.encode('utf-8'))
     txt_document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
     await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Фінансовий звіт {osbb} за {p_title}")
 
-    # 2. Одночасно автоматично збираємо і додаємо ZIP-архів з первинними документами
     if acts or docs:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
@@ -668,10 +686,14 @@ async def show_items(m: types.Message, state: FSMContext):
 
     status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
     conn = sqlite3.connect('osbb_acts.db'); c = conn.cursor()
-    if m.from_user.id == CHAIRMAN_ID: c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
+    
+    # Виправлено синтаксис (прибрано двократку з тернарного виразу)
+    if m.from_user.id == CHAIRMAN_ID: 
+        c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
     else:
         allowed = ACCESS_MAP.get(m.from_user.id, [])
         c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id ASC", allowed)
+        
     rows = c.fetchall(); conn.close()
     if not rows: return await m.answer("📭 Порожньо.")
     for r in rows:
@@ -718,7 +740,7 @@ async def s_back(cb: CallbackQuery):
 async def back_to_menu_inline(cb: CallbackQuery):
     await cb.message.edit_text("Дію скасовано. Скористайтесь кнопками меню на клавіатурі.")
 
-# --- РЕЄСТРАЦІЯ АКТІВ ТА ЧЕКІВ (FSM) З АВТО-ДАТОЮ ---
+# --- РЕЄСТРАЦІЯ АКТІВ ТА ЧЕКІВ (FSM) ---
 @dp.message(F.text == "➕ Створити Акт")
 async def start_a(m: types.Message, state: FSMContext): 
     if m.from_user.id == CHAIRMAN_ID: 
