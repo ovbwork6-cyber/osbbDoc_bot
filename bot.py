@@ -11,7 +11,7 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (InlineKeyboardButton, InlineKeyboardMarkup, 
-                           CallbackQuery, ReplyKeyboardMarkup, KeyboardButton)
+                            CallbackQuery, ReplyKeyboardMarkup, KeyboardButton)
 
 # --- НАЛАШТУВАННЯ ---
 load_dotenv()
@@ -41,13 +41,20 @@ dp = Dispatcher()
 
 # --- СТАНІ FSM ---
 class ActForm(StatesGroup):
-    number, osbb, descr, file = State(), State(), State(), State()
+    number = State()
+    osbb = State()
+    descr = State()
+    file = State()
 
 class DocForm(StatesGroup):
-    name, osbb, file = State(), State(), State()
+    name = State()
+    osbb = State()
+    file = State()
 
 class JobForm(StatesGroup):
-    osbb, month, text = State(), State(), State()
+    osbb = State()
+    month = State()
+    text = State()
 
 class JobCommentForm(StatesGroup):
     job_id = State()
@@ -56,31 +63,50 @@ class JobCommentForm(StatesGroup):
 
 # --- ІНІЦІАЛІЗАЦІЯ БАЗИ ДАНИХ ---
 def init_db():
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS acts (id INTEGER PRIMARY KEY AUTOINCREMENT, number TEXT, osbb TEXT, descr TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано", created_at TEXT)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS docs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, osbb TEXT, file_id TEXT, status TEXT DEFAULT "Не отримано", created_at TEXT)')
-    cursor.execute('CREATE TABLE IF NOT EXISTS salaries (id INTEGER PRIMARY KEY AUTOINCREMENT, month_year TEXT, employee TEXT, amount REAL, osbb TEXT, status TEXT DEFAULT "⏳ Очікує")')
-    
-    cursor.execute('''CREATE TABLE IF NOT EXISTS jobs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        osbb TEXT, 
-        month_year TEXT, 
-        task_text TEXT, 
-        status TEXT DEFAULT "Створено", 
-        stages TEXT DEFAULT "", 
-        comments TEXT DEFAULT "",
-        updated_at TEXT,
-        created_at TEXT
-    )''')
-    
-    try:
-        cursor.execute("ALTER TABLE acts ADD COLUMN created_at TEXT")
-    except: pass
-    try:
-        cursor.execute("ALTER TABLE docs ADD COLUMN created_at TEXT")
-    except: pass
-    
-    conn.commit(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS acts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            number TEXT, 
+            osbb TEXT, 
+            descr TEXT, 
+            file_id TEXT, 
+            status TEXT DEFAULT "Не отримано", 
+            created_at TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            name TEXT, 
+            osbb TEXT, 
+            file_id TEXT, 
+            status TEXT DEFAULT "Не отримано", 
+            created_at TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS salaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            month_year TEXT, 
+            employee TEXT, 
+            amount REAL, 
+            osbb TEXT, 
+            status TEXT DEFAULT "⏳ Очікує")''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            osbb TEXT, 
+            month_year TEXT, 
+            task_text TEXT, 
+            status TEXT DEFAULT "Створено", 
+            stages TEXT DEFAULT "", 
+            comments TEXT DEFAULT "",
+            updated_at TEXT,
+            created_at TEXT)''')
+        
+        # Безпечне додавання колонок, якщо вони відсутні
+        try:
+            cursor.execute("ALTER TABLE acts ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE docs ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 def get_seasonal_salary():
     month = datetime.now().month
@@ -160,9 +186,10 @@ async def view_salaries_options(cb: CallbackQuery):
 @dp.callback_query(F.data.startswith("sal_hist_"))
 async def view_salary_history(cb: CallbackQuery):
     osbb = cb.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT DISTINCT month_year FROM salaries WHERE osbb=? ORDER BY id ASC", (osbb,))
-    months = c.fetchall(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT month_year FROM salaries WHERE osbb=? ORDER BY id ASC", (osbb,))
+        months = c.fetchall()
     if not months: return await cb.answer("Історія порожня", show_alert=True)
     btns = [[InlineKeyboardButton(text=m[0], callback_data=f"sal_list_{osbb}_{m[0]}")] for m in months]
     btns.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"sal_v_{osbb}")])
@@ -173,9 +200,12 @@ async def show_salary_list(cb: CallbackQuery, osbb: str = None, m_y: str = None)
     if not osbb or not m_y:
         parts = cb.data.split("_")
         osbb, m_y = parts[2], parts[3]
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
-    rows = c.fetchall(); conn.close()
+    
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
+        rows = c.fetchall()
+
     if not rows:
         if m_y == datetime.now().strftime("%m.%Y"):
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Сформувати список", callback_data=f"sal_g_{osbb}")]])
@@ -194,24 +224,25 @@ async def show_salary_list(cb: CallbackQuery, osbb: str = None, m_y: str = None)
 async def gen_salaries(cb: CallbackQuery):
     osbb = cb.data.split("_")[2]
     m_y = datetime.now().strftime("%m.%Y")
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT count(*) FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
-    if c.fetchone()[0] == 0:
-        for emp, amo in STAFF_CONFIG[osbb].items():
-            val = get_seasonal_salary() if amo == "seasonal" else amo
-            c.execute("INSERT INTO salaries (month_year, employee, amount, osbb) VALUES (?,?,?,?)", (m_y, emp, val, osbb))
-        conn.commit()
-    conn.close(); await show_salary_list(cb, osbb, m_y)
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT count(*) FROM salaries WHERE osbb=? AND month_year=?", (osbb, m_y))
+        if c.fetchone()[0] == 0:
+            for emp, amo in STAFF_CONFIG[osbb].items():
+                val = get_seasonal_salary() if amo == "seasonal" else amo
+                c.execute("INSERT INTO salaries (month_year, employee, amount, osbb) VALUES (?,?,?,?)", (m_y, emp, val, osbb))
+    await show_salary_list(cb, osbb, m_y)
 
 @dp.callback_query(F.data.startswith("sal_p_"))
 async def toggle_salary(cb: CallbackQuery):
     p = cb.data.split("_")
     s_id, osbb, m_y = p[2], p[3], p[4]
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT status FROM salaries WHERE id=?", (s_id,))
-    new_stat = "⏳ Очікує" if c.fetchone()[0] == "✅ Видано" else "✅ Видано"
-    c.execute("UPDATE salaries SET status=? WHERE id=?", (new_stat, s_id))
-    conn.commit(); conn.close(); await show_salary_list(cb, osbb, m_y)
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT status FROM salaries WHERE id=?", (s_id,))
+        new_stat = "⏳ Очікує" if c.fetchone()[0] == "✅ Видано" else "✅ Видано"
+        c.execute("UPDATE salaries SET status=? WHERE id=?", (new_stat, s_id))
+    await show_salary_list(cb, osbb, m_y)
 
 # --- ПІДТВЕРДЖЕННЯ ДІЙ (АКТИ/ЧЕКИ) ---
 @dp.callback_query(F.data.startswith(("conf_", "yes_", "no_")))
@@ -224,23 +255,29 @@ async def handle_items_confirmed(cb: CallbackQuery):
         return await cb.answer("Ви впевнені?")
 
     if cmd_type == "no":
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute(f"SELECT status FROM {table} WHERE id=?", (item_id,))
-        stat = c.fetchone()[0]; conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute(f"SELECT status FROM {table} WHERE id=?", (item_id,))
+            stat = c.fetchone()[0]
         return await cb.message.edit_reply_markup(reply_markup=get_item_kb(item_id, stat, table, cb.from_user.id))
 
     if cmd_type == "yes":
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        new_status = None
-        if action == "del": c.execute(f"DELETE FROM {table} WHERE id=?", (item_id,)); await cb.message.delete()
-        elif action == "proc": new_status = "В роботі"; c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
-        elif action == "pay":
-            new_status = "Акт оплачений" if table == "acts" else "Опрацьовано"
-            c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
-        elif action == "fin":
-            new_status = "Завершено!" if table == "acts" else "Роботу завершено"
-            c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id)); await cb.message.delete()
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            new_status = None
+            if action == "del": 
+                c.execute(f"DELETE FROM {table} WHERE id=?", (item_id,))
+                await cb.message.delete()
+            elif action == "proc": 
+                new_status = "В роботі"
+                c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+            elif action == "pay":
+                new_status = "Акт оплачений" if table == "acts" else "Опрацьовано"
+                c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+            elif action == "fin":
+                new_status = "Завершено!" if table == "acts" else "Роботу завершено"
+                c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
+                await cb.message.delete()
         if new_status and action != "fin":
             cap = cb.message.caption.split("⏳")[0] + f"⏳ Status: {new_status}"
             await cb.message.edit_caption(caption=cap, reply_markup=get_item_kb(item_id, new_status, table, cb.from_user.id))
@@ -263,14 +300,15 @@ async def show_archived_acts_by_period(cb: CallbackQuery):
     osbb, year, period = p[3], p[4], p[5]
     await cb.answer("🔍 Шукаю акти...")
 
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    if period == "all":
-        c.execute("SELECT * FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, f"{year}-%"))
-        title = f"Всі закриті акти {osbb} за {year} рік"
-    else:
-        c.execute("SELECT * FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, f"{year}-{period}-%"))
-        title = f"Закриті акти {osbb} за {MONTHS_UA[period]} {year}"
-    rows = c.fetchall(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        if period == "all":
+            c.execute("SELECT * FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, f"{year}-%"))
+            title = f"Всі закриті акти {osbb} за {year} рік"
+        else:
+            c.execute("SELECT * FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, f"{year}-{period}-%"))
+            title = f"Закриті акти {osbb} за {MONTHS_UA[period]} {year}"
+        rows = c.fetchall()
 
     if not rows:
         return await cb.message.answer(f"📭 {title} відсутні в базі.")
@@ -309,12 +347,12 @@ async def send_filtered_zip(cb: CallbackQuery):
     date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
     period_title = f"{year}" if period == "all" else f"{MONTHS_UA[period]}_{year}"
 
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT number, file_id FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, date_pattern))
-    acts = c.fetchall()
-    c.execute("SELECT name, file_id FROM docs WHERE osbb=? AND status='Роботу завершено' AND created_at LIKE ?", (osbb, date_pattern))
-    docs = c.fetchall()
-    conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT number, file_id FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, date_pattern))
+        acts = c.fetchall()
+        c.execute("SELECT name, file_id FROM docs WHERE osbb=? AND status='Роботу завершено' AND created_at LIKE ?", (osbb, date_pattern))
+        docs = c.fetchall()
 
     if not acts and not docs:
         return await cb.message.answer(f"❌ За період {period_title} для {osbb} немає закритих документів.")
@@ -339,7 +377,7 @@ async def send_filtered_zip(cb: CallbackQuery):
     await bot.send_document(cb.message.chat.id, document, caption=f"✅ Згенеровано архів {osbb} за період: {period_title}")
 
 
-# --- МОДУЛЬ: ПЛАН РОБІТ (ІНТЕРАКТИВНИЙ ТА СТАБІЛЬНИЙ) ---
+# --- МОДУЛЬ: ПЛАН РОБІТ ---
 def get_job_card_markup(j_id, status, user_id):
     kb = []
     is_ch = (user_id == CHAIRMAN_ID)
@@ -349,20 +387,19 @@ def get_job_card_markup(j_id, status, user_id):
         if is_ch:
             kb.append([InlineKeyboardButton(text="❌ Видалити задачу", callback_data=f"jact_del_{j_id}")])
     elif status == "В роботі":
-        # Ряд 1: Додавання проміжних даних
         kb.append([
             InlineKeyboardButton(text="🧱 Додати етап", callback_data=f"jact_stage_{j_id}"),
             InlineKeyboardButton(text="💬 Коментар", callback_data=f"jact_comm_{j_id}")
         ])
-        # Ряд 2: Кнопка завершення (завжди окремим рядком, щоб не зникала)
         kb.append([InlineKeyboardButton(text="🏁 Роботу закінчено", callback_data=f"jact_fin_{j_id}")])
         
     return InlineKeyboardMarkup(inline_keyboard=kb) if kb else None
 
 async def render_job_text_and_kb(j_id, user_id):
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT osbb, month_year, task_text, status, stages, comments FROM jobs WHERE id=?", (j_id,))
-    row = c.fetchone(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT osbb, month_year, task_text, status, stages, comments FROM jobs WHERE id=?", (j_id,))
+        row = c.fetchone()
     if not row: return None, None
     
     osbb, m_y, text, stat, stages, comm = row
@@ -387,7 +424,7 @@ async def jobs_main_menu(m: types.Message, state: FSMContext):
 @dp.message(F.text == "➕ Добавити роботу")
 async def job_add_start(m: types.Message, state: FSMContext):
     if m.from_user.id != CHAIRMAN_ID: return
-    await state.clear() # Очищуємо попередні стани, щоб уникнути конфліктів даних
+    await state.clear() 
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=osbb, callback_data=f"jadd_osbb_{osbb}")] for osbb in STAFF_CONFIG.keys()])
     await m.answer("Оберіть ОСББ для додавання завдання:", reply_markup=kb)
 
@@ -419,7 +456,6 @@ async def job_add_save(m: types.Message, state: FSMContext):
         osbb = d.get('osbb')
         m_y = d.get('m_y')
         
-        # Безпечний захист від Key-Error збою
         if not osbb or not m_y:
             await m.answer("❌ Сталася помилка: втрачено дані про період або ОСББ. Спробуйте створити завдання заново.")
             await state.clear()
@@ -427,10 +463,10 @@ async def job_add_save(m: types.Message, state: FSMContext):
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("INSERT INTO jobs (osbb, month_year, task_text, updated_at, created_at) VALUES (?,?,?,?,?)",
-                  (osbb, m_y, m.text, now_str, datetime.now().strftime("%Y-%m-%d")))
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("INSERT INTO jobs (osbb, month_year, task_text, updated_at, created_at) VALUES (?,?,?,?,?)",
+                      (osbb, m_y, m.text, now_str, datetime.now().strftime("%Y-%m-%d")))
         
         await state.clear()
         await m.answer("✅ Задача успішно додана в план робіт!", reply_markup=get_main_menu())
@@ -447,9 +483,10 @@ async def current_jobs_start(m: types.Message):
 @dp.callback_query(F.data.startswith("jview_curr_"))
 async def show_current_jobs(cb: CallbackQuery):
     osbb = cb.data.split("_")[2]
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT id FROM jobs WHERE osbb=? AND status != 'Роботу закінчено' ORDER BY id DESC", (osbb,))
-    ids = c.fetchall(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM jobs WHERE osbb=? AND status != 'Роботу закінчено' ORDER BY id DESC", (osbb,))
+        ids = c.fetchall()
     
     if not ids:
         return await cb.message.edit_text(f"📭 Активних (поточних) робіт по {osbb} немає.")
@@ -468,24 +505,23 @@ async def handle_job_action(cb: CallbackQuery, state: FSMContext):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     
     if action == "del":
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("DELETE FROM jobs WHERE id=?", (j_id,))
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM jobs WHERE id=?", (j_id,))
         await cb.message.delete(); return await cb.answer("Видалено")
         
     elif action == "proc":
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("UPDATE jobs SET status='В роботі', updated_at=? WHERE id=?", (now_str, j_id))
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE jobs SET status='В роботі', updated_at=? WHERE id=?", (now_str, j_id))
         await cb.answer("Взято в роботу!")
-        # Динамічно редагуємо поточну картку на екрані
         msg_text, markup = await render_job_text_and_kb(j_id, cb.from_user.id)
         if msg_text: await cb.message.edit_text(msg_text, reply_markup=markup, parse_mode="HTML")
         
     elif action == "fin":
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("UPDATE jobs SET status='Роботу закінчено', updated_at=? WHERE id=?", (now_str, j_id))
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE jobs SET status='Роботу закінчено', updated_at=? WHERE id=?", (now_str, j_id))
         await cb.answer("Роботу успішно закрито!")
         await cb.message.delete()
         
@@ -510,27 +546,26 @@ async def save_job_stage_or_comment(m: types.Message, state: FSMContext):
             
         now_str = datetime.now().strftime("[%d.%m %H:%M]")
         
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        if mode == "stage":
-            c.execute("SELECT stages FROM jobs WHERE id=?", (j_id,))
-            row = c.fetchone()
-            old = row[0] if row and row[0] else ""
-            new_val = old + f"• {now_str} {m.text}\n"
-            c.execute("UPDATE jobs SET stages=? WHERE id=?", (new_val, j_id))
-        else:
-            c.execute("SELECT comments FROM jobs WHERE id=?", (j_id,))
-            row = c.fetchone()
-            old = row[0] if row and row[0] else ""
-            new_val = old + f"{now_str}: {m.text}\n"
-            c.execute("UPDATE jobs SET comments=? WHERE id=?", (new_val, j_id))
-            
-        conn.commit(); conn.close()
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            if mode == "stage":
+                c.execute("SELECT stages FROM jobs WHERE id=?", (j_id,))
+                row = c.fetchone()
+                old = row[0] if row and row[0] else ""
+                new_val = old + f"• {now_str} {m.text}\n"
+                c.execute("UPDATE jobs SET stages=? WHERE id=?", (new_val, j_id))
+            else:
+                c.execute("SELECT comments FROM jobs WHERE id=?", (j_id,))
+                row = c.fetchone()
+                old = row[0] if row and row[0] else ""
+                new_val = old + f"{now_str}: {m.text}\n"
+                c.execute("UPDATE jobs SET comments=? WHERE id=?", (new_val, j_id))
+                
         await state.clear()
         await m.answer("✅ Дані оновлено в картці завдання.", reply_markup=get_main_menu())
     except Exception as e:
         await m.answer(f"❌ Помилка оновлення картки завдання: {e}")
 
-# Виконані роботи з періодами
 @dp.message(F.text == "✅ Виконані роботи")
 async def finished_jobs_menu(m: types.Message):
     allowed_osbb = list(STAFF_CONFIG.keys()) if m.from_user.id == CHAIRMAN_ID else ACCESS_MAP.get(m.from_user.id, [])
@@ -557,9 +592,10 @@ async def show_finished_jobs_results(cb: CallbackQuery):
     date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
     title = f"Всі виконані роботи {osbb} за {year} рік" if period == "all" else f"Виконані роботи {osbb} за {MONTHS_UA[period]} {year}"
 
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    c.execute("SELECT month_year, task_text, stages, comments, updated_at FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ? ORDER BY id DESC", (osbb, date_pattern))
-    rows = c.fetchall(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT month_year, task_text, stages, comments, updated_at FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ? ORDER BY id DESC", (osbb, date_pattern))
+        rows = c.fetchall()
 
     if not rows:
         return await cb.message.answer(f"📭 {title} не знайдені.")
@@ -574,7 +610,7 @@ async def show_finished_jobs_results(cb: CallbackQuery):
         await cb.message.answer(m_txt, parse_mode="HTML")
 
 
-# --- МОДУЛЬ: АВТОМАТИЧНІ ЧИСТІ ЗВІТИ (ПРОЗВІТУВАТИ) ---
+# --- МОДУЛЬ: АВТОМАТИЧНІ ЧИСТІ ЗВІТИ ---
 @dp.message(F.text == "📊 Прозвітувати")
 async def report_main_menu(m: types.Message):
     if m.from_user.id != CHAIRMAN_ID: return
@@ -601,22 +637,17 @@ async def generate_and_send_report_file(cb: CallbackQuery):
     date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
     p_title = f"{year} рік" if period == "all" else f"{MONTHS_UA[period]} {year}"
 
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-    
-    c.execute("SELECT number, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
-    acts = c.fetchall()
-    
-    c.execute("SELECT name, file_id, status, created_at FROM docs WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
-    docs = c.fetchall()
-    
-    sal_pattern = f"%.{year}" if period == "all" else f"{period}.{year}"
-    c.execute("SELECT month_year, employee, amount, status FROM salaries WHERE osbb=? AND month_year LIKE ?", (osbb, sal_pattern))
-    salaries = c.fetchall()
-    
-    c.execute("SELECT task_text, stages, comments, updated_at, month_year FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
-    jobs = c.fetchall()
-    
-    conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("SELECT number, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
+        acts = c.fetchall()
+        c.execute("SELECT name, file_id, status, created_at FROM docs WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
+        docs = c.fetchall()
+        sal_pattern = f"%.{year}" if period == "all" else f"{period}.{year}"
+        c.execute("SELECT month_year, employee, amount, status FROM salaries WHERE osbb=? AND month_year LIKE ?", (osbb, sal_pattern))
+        salaries = c.fetchall()
+        c.execute("SELECT task_text, stages, comments, updated_at, month_year FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
+        jobs = c.fetchall()
 
     report = f"==================================================\n"
     report += f"     ФІНАНСОВО-ГОСПОДАРСЬКИЙ ЗВІТ ДЛЯ {osbb}\n"
@@ -672,7 +703,7 @@ async def generate_and_send_report_file(cb: CallbackQuery):
 
     report_file = io.BytesIO(report.encode('utf-8'))
     txt_document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
-    await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Фінансовий звіт {osbb} за {p_title}")
+    await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Финансовый звіт {osbb} за {p_title}")
 
     if acts or docs:
         zip_buffer = io.BytesIO()
@@ -695,7 +726,7 @@ async def generate_and_send_report_file(cb: CallbackQuery):
         await bot.send_document(cb.message.chat.id, zip_document, caption=f"📦 Підтверджуючі первинні документи (Архів) за {p_title}")
 
 
-# --- РЕШТА ФУНКЦІЙ МЕНЮ (З ОЧИЩЕННЯМ СТАНУ) ---
+# --- РЕШТА ФУНКЦІЙ МЕНЮ ---
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext): 
     await state.clear(); await m.answer("👋 Система готова.", reply_markup=get_main_menu())
@@ -712,15 +743,16 @@ async def show_items(m: types.Message, state: FSMContext):
         return await m.answer("Оберіть ОСББ для перегляду архіву актів:", reply_markup=kb)
 
     status_sql = "status IN ('Завершено!', 'Роботу завершено')" if is_arch else "status NOT IN ('Завершено!', 'Роботу завершено')"
-    conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
     
-    if m.from_user.id == CHAIRMAN_ID: 
-        c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
-    else:
-        allowed = ACCESS_MAP.get(m.from_user.id, [])
-        c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id ASC", allowed)
-        
-    rows = c.fetchall(); conn.close()
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        if m.from_user.id == CHAIRMAN_ID: 
+            c.execute(f"SELECT * FROM {table} WHERE {status_sql} ORDER BY id ASC")
+        else:
+            allowed = ACCESS_MAP.get(m.from_user.id, [])
+            c.execute(f"SELECT * FROM {table} WHERE {status_sql} AND osbb IN ({','.join(['?']*len(allowed))}) ORDER BY id ASC", allowed)
+        rows = c.fetchall()
+
     if not rows: return await m.answer("📭 Порожньо.")
     for r in rows:
         if is_acts:
@@ -759,8 +791,8 @@ async def m_back(m: types.Message, state: FSMContext):
     await m.answer("Головне меню:", reply_markup=get_main_menu())
 
 @dp.callback_query(F.data == "sal_back")
-async def s_back(cb: CallbackQuery): 
-    await salary_menu(cb.message, FSMContext); await cb.message.delete()
+async def s_back(cb: CallbackQuery, state: FSMContext): 
+    await salary_menu(cb.message, state); await cb.message.delete()
 
 @dp.callback_query(F.data == "main_menu_back")
 async def back_to_menu_inline(cb: CallbackQuery):
@@ -774,24 +806,26 @@ async def start_a(m: types.Message, state: FSMContext):
 
 @dp.message(ActForm.number)
 async def a_n(m: types.Message, state: FSMContext):
-    await state.update_data(n=m.text); await m.answer("Введіть ОСББ:"); await state.set_state(ActForm.osbb)
+    await state.update_data(number=m.text); await m.answer("Введіть ОСББ:"); await state.set_state(ActForm.osbb)
 
 @dp.message(ActForm.osbb)
 async def a_o(m: types.Message, state: FSMContext):
-    await state.update_data(o=m.text.upper()); await m.answer("Введіть опис:"); await state.set_state(ActForm.descr)
+    await state.update_data(osbb=m.text.strip().upper()); await m.answer("Введіть опис:"); await state.set_state(ActForm.descr)
 
 @dp.message(ActForm.descr)
 async def a_d(m: types.Message, state: FSMContext):
-    await state.update_data(d=m.text); await m.answer("Завантажте фото:"); await state.set_state(ActForm.file)
+    await state.update_data(descr=m.text); await m.answer("Завантажте фото:"); await state.set_state(ActForm.file)
 
 @dp.message(ActForm.file, F.photo)
 async def a_f(m: types.Message, state: FSMContext):
     try:
         d = await state.get_data()
         today = datetime.now().strftime("%Y-%m-%d")
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)", (d['n'], d['o'], d['d'], m.photo[-1].file_id, today))
-        conn.commit(); conn.close(); await state.clear(); await m.answer("✅ Акт зареєстровано")
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)", 
+                      (d['number'], d['osbb'], d['descr'], m.photo[-1].file_id, today))
+        await state.clear(); await m.answer("✅ Акт зареєстровано")
     except Exception as e:
         await m.answer(f"❌ Помилка реєстрації акту: {e}")
 
@@ -802,20 +836,22 @@ async def start_d(m: types.Message, state: FSMContext):
 
 @dp.message(DocForm.name)
 async def d_n(m: types.Message, state: FSMContext):
-    await state.update_data(n=m.text); await m.answer("Введіть ОСББ:"); await state.set_state(DocForm.osbb)
+    await state.update_data(name=m.text); await m.answer("Введіть ОСББ:"); await state.set_state(DocForm.osbb)
 
 @dp.message(DocForm.osbb)
 async def d_o(m: types.Message, state: FSMContext):
-    await state.update_data(o=m.text.upper()); await m.answer("Завантажте PDF:"); await state.set_state(DocForm.file)
+    await state.update_data(osbb=m.text.strip().upper()); await m.answer("Завантажте PDF:"); await state.set_state(DocForm.file)
 
 @dp.message(DocForm.file, F.document)
 async def d_f(m: types.Message, state: FSMContext):
     try:
         d = await state.get_data()
         today = datetime.now().strftime("%Y-%m-%d")
-        conn = sqlite3.connect('osbb_acts.db', timeout=10); c = conn.cursor()
-        c.execute("INSERT INTO docs (name, osbb, file_id, created_at) VALUES (?,?,?,?)", (d['n'], d['o'], m.document.file_id, today))
-        conn.commit(); conn.close(); await state.clear(); await m.answer("✅ PDF додано")
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("INSERT INTO docs (name, osbb, file_id, created_at) VALUES (?,?,?,?)", 
+                      (d['name'], d['osbb'], m.document.file_id, today))
+        await state.clear(); await m.answer("✅ PDF додано")
     except Exception as e:
         await m.answer(f"❌ Помилка додавання PDF чеку: {e}")
 
