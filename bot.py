@@ -24,7 +24,7 @@ ACCESS_MAP = {
 }
 
 STAFF_CONFIG = {
-    "ВП-16": {"Голова": 6000, "Бухгалтер": 3000, "Прибирання (Марія)": 9500, "Прибирання (Олег)": 2500, "Сантехнік": 2800},
+    "ВП-16": {"Голова": 6000, "Бухгалтер": 3000, "Прибирання (Марія)": 9500, "Прибирання (Олег)": 3000, "Сантехнік": 2800},
     "Е21": {"Голова": 6000, "Бухгалтер": 3000, "Сантехнік": 1000, "Двірник": "seasonal"},
     "ОКПТ": {"Голова": 4000, "Бухгалтер": 1000, "Нарахування ВТВК": 1000, "Двірник": 2000, "Обхідник": 1000, "Баки": 1000},
     "В19": {"Голова": 4820, "Сантехнік": 2500, "Бухгалтер": 2500, "Бухгалтер (ФОП)": 500}
@@ -45,6 +45,10 @@ class ActForm(StatesGroup):
     osbb = State()
     descr = State()
     file = State()
+
+class ActAttachPhotoForm(StatesGroup):
+    act_id = State()
+    photo = State()
 
 class DocForm(StatesGroup):
     name = State()
@@ -98,15 +102,10 @@ def init_db():
             updated_at TEXT,
             created_at TEXT)''')
         
-        # Безпечне додавання колонок, якщо вони відсутні
-        try:
-            cursor.execute("ALTER TABLE acts ADD COLUMN created_at TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("ALTER TABLE docs ADD COLUMN created_at TEXT")
-        except sqlite3.OperationalError:
-            pass
+        try: cursor.execute("ALTER TABLE acts ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE docs ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError: pass
 
 def get_seasonal_salary():
     month = datetime.now().month
@@ -144,17 +143,31 @@ def get_confirm_kb(item_id, action, table):
         InlineKeyboardButton(text="❌ Ні", callback_data=f"no_cancel_{table}_{item_id}")
     ]])
 
-def get_item_kb(item_id, status, table, user_id):
+def get_item_kb(item_id, status, table, user_id, file_id=""):
     btns = []
     is_ch = (user_id == CHAIRMAN_ID)
+    has_photo = (file_id != "NO_FILE" and bool(file_id))
+    
     if table == "acts":
         if status == "Не отримано":
-            if is_ch: btns.append([InlineKeyboardButton(text="❌ Видалити акт", callback_data=f"conf_del_acts_{item_id}")])
-            else: btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"conf_proc_acts_{item_id}")])
+            if is_ch: 
+                btns.append([InlineKeyboardButton(text="❌ Видалити акт", callback_data=f"conf_del_acts_{item_id}")])
+            else: 
+                btns.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=f"conf_proc_acts_{item_id}")])
         elif status == "В роботі" and not is_ch:
             btns.append([InlineKeyboardButton(text="💳 Оплачено", callback_data=f"conf_pay_acts_{item_id}")])
         elif status == "Акт оплачений" and is_ch:
-            btns.append([InlineKeyboardButton(text="✅ Завершити", callback_data=f"conf_fin_acts_{item_id}")])
+            # ГОЛОВНА ЛОГІКА: Якщо немає фото, не даємо завершити, показуємо кнопку завантаження фото
+            if not has_photo:
+                btns.append([InlineKeyboardButton(text="📷 Додати фото акту (обов'язково)", callback_data=f"attach_photo_{item_id}")])
+            else:
+                btns.append([InlineKeyboardButton(text="✅ Завершити", callback_data=f"conf_fin_acts_{item_id}")])
+                btns.append([InlineKeyboardButton(text="🔄 Оновити фото акту", callback_data=f"attach_photo_{item_id}")])
+        
+        # Додаткова можливість прикріпити фото на будь-якому етапі для голови або сантехніка
+        if not has_photo and status != "Акт оплачений":
+            btns.append([InlineKeyboardButton(text="📷 Завантажити фото", callback_data=f"attach_photo_{item_id}")])
+            
     else:
         if status == "Не отримано":
             if is_ch: btns.append([InlineKeyboardButton(text="❌ Видалити PDF", callback_data=f"conf_del_docs_{item_id}")])
@@ -163,6 +176,7 @@ def get_item_kb(item_id, status, table, user_id):
             btns.append([InlineKeyboardButton(text="📝 Опрацьовано", callback_data=f"conf_pay_docs_{item_id}")])
         elif status == "Опрацьовано" and is_ch:
             btns.append([InlineKeyboardButton(text="✅ Завершити", callback_data=f"conf_fin_docs_{item_id}")])
+            
     return InlineKeyboardMarkup(inline_keyboard=btns) if btns else None
 
 # --- МЕНЮ ЗАРПЛАТ ---
@@ -244,6 +258,36 @@ async def toggle_salary(cb: CallbackQuery):
         c.execute("UPDATE salaries SET status=? WHERE id=?", (new_stat, s_id))
     await show_salary_list(cb, osbb, m_y)
 
+# --- ДАКРУТКА ФОТО ДО АКТУ ---
+@dp.callback_query(F.data.startswith("attach_photo_"))
+async def start_attach_photo(cb: CallbackQuery, state: FSMContext):
+    act_id = int(cb.data.split("_")[2])
+    await state.update_data(act_id=act_id)
+    await state.set_state(ActAttachPhotoForm.photo)
+    await cb.message.answer("📸 <b>Надішліть фото підписаного або оригінального акту:</b>", parse_mode="HTML")
+    await cb.answer()
+
+@dp.message(ActAttachPhotoForm.photo, F.photo)
+async def save_attached_photo(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    act_id = data.get("act_id")
+    file_id = m.photo[-1].file_id
+    
+    with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute("UPDATE acts SET file_id=? WHERE id=?", (file_id, act_id))
+        c.execute("SELECT number, osbb, descr, status FROM acts WHERE id=?", (act_id,))
+        r = c.fetchone()
+
+    await state.clear()
+    await m.answer("✅ Фото акту успішно додано/оновлено!")
+    
+    if r:
+        num, osbb, descr, stat = r
+        cap = f"📄 Акт №{num} ({osbb})\n📝 Опис: {descr}\n⏳ Статус: {stat}"
+        kb = get_item_kb(act_id, stat, "acts", m.from_user.id, file_id)
+        await bot.send_photo(m.chat.id, file_id, caption=cap, reply_markup=kb)
+
 # --- ПІДТВЕРДЖЕННЯ ДІЙ (АКТИ/ЧЕКИ) ---
 @dp.callback_query(F.data.startswith(("conf_", "yes_", "no_")))
 async def handle_items_confirmed(cb: CallbackQuery):
@@ -257,9 +301,11 @@ async def handle_items_confirmed(cb: CallbackQuery):
     if cmd_type == "no":
         with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
             c = conn.cursor()
-            c.execute(f"SELECT status FROM {table} WHERE id=?", (item_id,))
-            stat = c.fetchone()[0]
-        return await cb.message.edit_reply_markup(reply_markup=get_item_kb(item_id, stat, table, cb.from_user.id))
+            c.execute(f"SELECT status, file_id FROM {table} WHERE id=?", (item_id,))
+            row = c.fetchone()
+            stat = row[0]
+            f_id = row[1] if table == "acts" else ""
+        return await cb.message.edit_reply_markup(reply_markup=get_item_kb(item_id, stat, table, cb.from_user.id, f_id))
 
     if cmd_type == "yes":
         with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
@@ -279,8 +325,19 @@ async def handle_items_confirmed(cb: CallbackQuery):
                 c.execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, item_id))
                 await cb.message.delete()
         if new_status and action != "fin":
-            cap = cb.message.caption.split("⏳")[0] + f"⏳ Status: {new_status}"
-            await cb.message.edit_caption(caption=cap, reply_markup=get_item_kb(item_id, new_status, table, cb.from_user.id))
+            c_text = cb.message.caption if cb.message.caption else cb.message.text
+            cap = c_text.split("⏳")[0] + f"⏳ Статус: {new_status}"
+            
+            with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+                c = conn.cursor()
+                c.execute(f"SELECT file_id FROM {table} WHERE id=?", (item_id,))
+                f_id = c.fetchone()[0]
+                
+            kb = get_item_kb(item_id, new_status, table, cb.from_user.id, f_id)
+            if cb.message.photo:
+                await cb.message.edit_caption(caption=cap, reply_markup=kb)
+            else:
+                await cb.message.edit_text(text=cap, reply_markup=kb)
 
 # --- АРХІВ АКТІВ ПЕРІОДИ ---
 @dp.callback_query(F.data.startswith("arch_acts_v_"))
@@ -316,7 +373,11 @@ async def show_archived_acts_by_period(cb: CallbackQuery):
     await cb.message.answer(f"⬇️ <b>{title}:</b>", parse_mode="HTML")
     for r in rows:
         cap = f"📄 Акт №{r[1]} ({r[2]})\n📝 Опис: {r[3]}\n📅 Дата: {r[6]}\n⏳ Статус: {r[5]}"
-        try: await bot.send_photo(cb.message.chat.id, r[4], caption=cap)
+        try: 
+            if r[4] != "NO_FILE":
+                await bot.send_photo(cb.message.chat.id, r[4], caption=cap)
+            else:
+                await cb.message.answer(cap)
         except: pass
 
 # --- ZIP АРХІВАТОР З ПЕРІОДАМИ ---
@@ -336,7 +397,7 @@ async def zip_arch_years(cb: CallbackQuery):
 async def zip_arch_months(cb: CallbackQuery):
     p = cb.data.split("_")
     osbb, year = p[2], p[3]
-    await cb.message.edit_text(f"📦 <b>ZIP Архів для {osbb} ({year})</b>. Оберіть період:", reply_markup=get_period_keyboard("zip", osbb, year), parse_mode="HTML")
+    await cb.message.edit_text(f"📦 <b>ZIP Архів для {osbb} ({year})</b>. Оберіть період:", reply_markup=get_period_keyboard("zip", osbb), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("zip_fin_"))
 async def send_filtered_zip(cb: CallbackQuery):
@@ -360,6 +421,7 @@ async def send_filtered_zip(cb: CallbackQuery):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
         for num, f_id in acts:
+            if f_id == "NO_FILE": continue
             try:
                 file = await bot.get_file(f_id)
                 file_data = await bot.download_file(file.file_path)
@@ -661,7 +723,10 @@ async def generate_and_send_report_file(cb: CallbackQuery):
         for num, descr, f_id, stat, date in acts:
             report += f"• Акт №{num} від [{date}] | Status: {stat}\n"
             report += f"  Опис: {descr}\n"
-            report += f"  📂 Файл в архіві: Акти/Акт_№{num}.jpg\n\n"
+            if f_id != "NO_FILE":
+                report += f"  📂 Файл в архіві: Акти/Акт_№{num}.jpg\n\n"
+            else:
+                report += f"  ⚠️ Файл акту відсутній у базі\n\n"
     else:
         report += "Записів за вказаний період немає.\n\n"
 
@@ -703,12 +768,13 @@ async def generate_and_send_report_file(cb: CallbackQuery):
 
     report_file = io.BytesIO(report.encode('utf-8'))
     txt_document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
-    await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Финансовый звіт {osbb} за {p_title}")
+    await bot.send_document(cb.message.chat.id, txt_document, caption=f"📄 Фінансовий звіт {osbb} за {p_title}")
 
     if acts or docs:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED) as zip_file:
             for num, f_id in acts:
+                if f_id == "NO_FILE": continue
                 try:
                     file = await bot.get_file(f_id)
                     file_data = await bot.download_file(file.file_path)
@@ -756,9 +822,14 @@ async def show_items(m: types.Message, state: FSMContext):
     if not rows: return await m.answer("📭 Порожньо.")
     for r in rows:
         if is_acts:
-            cap = f"📄 Акт №{r[1]} ({r[2]})\n📝 Опис: {r[3]}\n⏳ Статус: {r[5]}"
-            kb = get_item_kb(r[0], r[5], "acts", m.from_user.id) if not is_arch else None
-            try: await bot.send_photo(m.chat.id, r[4], caption=cap, reply_markup=kb)
+            photo_note = "\n⚠️ (Фото ще не додано)" if r[4] == "NO_FILE" else ""
+            cap = f"📄 Акт №{r[1]} ({r[2]}){photo_note}\n📝 Опис: {r[3]}\n⏳ Статус: {r[5]}"
+            kb = get_item_kb(r[0], r[5], "acts", m.from_user.id, r[4]) if not is_arch else None
+            try: 
+                if r[4] != "NO_FILE":
+                    await bot.send_photo(m.chat.id, r[4], caption=cap, reply_markup=kb)
+                else:
+                    await m.answer(cap, reply_markup=kb)
             except: pass
         else:
             cap = f"🧾 Чек: {r[1]} ({r[2]})\n⏳ Статус: {r[4]}"
@@ -798,7 +869,7 @@ async def s_back(cb: CallbackQuery, state: FSMContext):
 async def back_to_menu_inline(cb: CallbackQuery):
     await cb.message.edit_text("Дію скасовано. Скористайтесь кнопками меню на клавіатурі.")
 
-# --- РЕЄСТРАЦІЯ АКТІВ ТА ЧЕКІВ (FSM) ---
+# --- РЕЄСТРАЦІЯ АКТІВ (З МОЖЛИВІСТЮ ПРОПУСКУ ФОТО) ---
 @dp.message(F.text == "➕ Створити Акт")
 async def start_a(m: types.Message, state: FSMContext): 
     if m.from_user.id == CHAIRMAN_ID: 
@@ -814,7 +885,24 @@ async def a_o(m: types.Message, state: FSMContext):
 
 @dp.message(ActForm.descr)
 async def a_d(m: types.Message, state: FSMContext):
-    await state.update_data(descr=m.text); await m.answer("Завантажте фото:"); await state.set_state(ActForm.file)
+    await state.update_data(descr=m.text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏭️ Пропустити (без фото)", callback_data="skip_act_photo")]])
+    await m.answer("Завантажте фото акту або натисніть кнопку нижче, щоб додати його пізніше:", reply_markup=kb)
+    await state.set_state(ActForm.file)
+
+@dp.callback_query(F.data == "skip_act_photo", ActForm.file)
+async def a_f_skip(cb: CallbackQuery, state: FSMContext):
+    try:
+        d = await state.get_data()
+        today = datetime.now().strftime("%Y-%m-%d")
+        with sqlite3.connect('osbb_acts.db', timeout=10) as conn:
+            c = conn.cursor()
+            c.execute("INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)", 
+                      (d['number'], d['osbb'], d['descr'], 'NO_FILE', today))
+        await state.clear()
+        await cb.message.edit_text("✅ Акт зареєстровано без фото. Ви зможете додате його пізніше перед закриттям.")
+    except Exception as e:
+        await cb.message.edit_text(f"❌ Помилка реєстрації акту: {e}")
 
 @dp.message(ActForm.file, F.photo)
 async def a_f(m: types.Message, state: FSMContext):
@@ -825,10 +913,11 @@ async def a_f(m: types.Message, state: FSMContext):
             c = conn.cursor()
             c.execute("INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)", 
                       (d['number'], d['osbb'], d['descr'], m.photo[-1].file_id, today))
-        await state.clear(); await m.answer("✅ Акт зареєстровано")
+        await state.clear(); await m.answer("✅ Акт успішно зареєстровано з фото!")
     except Exception as e:
         await m.answer(f"❌ Помилка реєстрації акту: {e}")
 
+# --- РЕЄСТРАЦІЯ ЧЕКІВ (FSM) ---
 @dp.message(F.text == "➕ Додати PDF чек")
 async def start_d(m: types.Message, state: FSMContext):
     if m.from_user.id == CHAIRMAN_ID: 
