@@ -154,12 +154,12 @@ class JobCb(CallbackData, prefix="job"):
 
 class PageCb(CallbackData, prefix="page"):
     kind: Literal["items", "jobs", "finished"]
-    table: str = ""
+    table: str = "-"
     archive: int = 0
-    osbb: str = ""
+    osbb: str = "-"
     page: int = 0
-    year: str = ""
-    period: str = ""
+    year: str = "-"
+    period: str = "-"
 
 
 @dataclass(frozen=True)
@@ -471,11 +471,13 @@ def page_keyboard(kind: str, table: str, archive: bool, osbb: str, page: int, to
     if max_page == 0:
         return None
     row = []
+    cb_table = table or "-"
+    cb_osbb = osbb or "-"
     if page > 0:
-        row.append(InlineKeyboardButton(text="⬅️", callback_data=PageCb(kind=kind, table=table, archive=int(archive), osbb=osbb, page=page - 1).pack()))
+        row.append(InlineKeyboardButton(text="⬅️", callback_data=PageCb(kind=kind, table=cb_table, archive=int(archive), osbb=cb_osbb, page=page - 1).pack()))
     row.append(InlineKeyboardButton(text=f"{page + 1}/{max_page + 1}", callback_data="noop"))
     if page < max_page:
-        row.append(InlineKeyboardButton(text="➡️", callback_data=PageCb(kind=kind, table=table, archive=int(archive), osbb=osbb, page=page + 1).pack()))
+        row.append(InlineKeyboardButton(text="➡️", callback_data=PageCb(kind=kind, table=cb_table, archive=int(archive), osbb=cb_osbb, page=page + 1).pack()))
     return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
@@ -612,10 +614,18 @@ async def show_items(m: types.Message, state: FSMContext) -> None:
     await render_items_page(m, table, archive, m.from_user.id)
 
 
-@dp.callback_query(PageCb.filter(F.kind == "items"))
+@dp.callback_query(PageCb.filter())
 async def paginate_items(cb: CallbackQuery, callback_data: PageCb) -> None:
     await cb.message.delete()
-    await render_items_page(cb.message, callback_data.table, bool(callback_data.archive), cb.from_user.id, callback_data.page, callback_data.osbb)
+    osbb = "" if callback_data.osbb == "-" else callback_data.osbb
+    if callback_data.kind == "items":
+        table = "" if callback_data.table == "-" else callback_data.table
+        await render_items_page(cb.message, table, bool(callback_data.archive), cb.from_user.id, callback_data.page, osbb)
+    elif callback_data.kind == "jobs":
+        await render_jobs_page(cb.message, cb.from_user.id, osbb, callback_data.page)
+    else:
+        await cb.answer("Некоректна сторінка", show_alert=True)
+        return
     await cb.answer()
 
 
@@ -1025,13 +1035,6 @@ async def render_jobs_page(message: types.Message, user_id: int, osbb: str, page
         text, kb = await render_job_text_and_kb(row["id"], user_id)
         if text:
             await message.answer(text, reply_markup=kb, parse_mode="HTML")
-
-
-@dp.callback_query(PageCb.filter(F.kind == "jobs"))
-async def paginate_jobs(cb: CallbackQuery, callback_data: PageCb) -> None:
-    await cb.message.delete()
-    await render_jobs_page(cb.message, cb.from_user.id, callback_data.osbb, callback_data.page)
-    await cb.answer()
 
 
 def job_card_markup(job_id: int, status: str, user_id: int) -> InlineKeyboardMarkup | None:
