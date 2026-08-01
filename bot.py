@@ -48,9 +48,9 @@ CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
 # salaries) because those all gate on can_access_osbb()/user_allowed_osbbs(),
 # which return False/[] for anyone not in ACCESS_MAP or CHAIRMAN_ID.
 # Add a new person here (same pattern) to give them the same one-button view.
-READONLY_VIEWERS: dict[int, dict[str, str]] = {
-    5186498707: {"name": "Сокол Микола Миколайович", "keyword": "Сокол"},
-    396484643: {"name": "Денисюк Станіслав Станіславович", "keyword": "Денисюк"},
+READONLY_VIEWERS: dict[int, dict[str, Any]] = {
+    5186498707: {"name": "Сокол Микола Миколайович", "keywords": ["Сокол"]},
+    396484643: {"name": "Денисюк Станіслав Станіславович", "keywords": ["Денисюк", "ТО"]},
 }
 
 ACCESS_MAP = {
@@ -219,8 +219,8 @@ def is_readonly_viewer(user_id: int) -> bool:
     return user_id in READONLY_VIEWERS
 
 
-def readonly_keyword(user_id: int) -> str:
-    return READONLY_VIEWERS[user_id]["keyword"]
+def readonly_keywords(user_id: int) -> list[str]:
+    return READONLY_VIEWERS[user_id]["keywords"]
 
 
 def readonly_name(user_id: int) -> str:
@@ -757,10 +757,12 @@ async def readonly_refresh_status(m: types.Message, state: FSMContext) -> None:
     if not is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
-    keyword = readonly_keyword(m.from_user.id)
+    keywords = readonly_keywords(m.from_user.id)
+    where = " OR ".join("descr LIKE ?" for _ in keywords)
+    params = [f"%{kw}%" for kw in keywords]
     rows = await db_fetch_all(
-        "SELECT number, osbb, status, created_at FROM acts WHERE descr LIKE ? ORDER BY osbb ASC, id ASC",
-        (f"%{keyword}%",),
+        f"SELECT number, osbb, status, created_at FROM acts WHERE {where} ORDER BY osbb ASC, id ASC",
+        params,
     )
     if not rows:
         await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=readonly_menu())
