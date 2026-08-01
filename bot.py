@@ -42,12 +42,16 @@ if not CHAIRMAN_ID_RAW.isdigit():
 
 CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
 
-# Read-only user: sees only the status of acts whose description contains "Сокол",
-# across all OSBB. Not part of ACCESS_MAP on purpose — this keeps him locked out
-# of every other flow (acts list/create, docs, jobs, salaries) because those all
-# gate on can_access_osbb()/user_allowed_osbbs(), which return False/[] for him.
-SOKOL_ID = 5186498707
-SOKOL_KEYWORD = "Сокол"
+# Read-only viewers: each sees only the status of acts whose description contains
+# their keyword, across all OSBB. None of them are part of ACCESS_MAP on purpose —
+# this keeps them locked out of every other flow (acts list/create, docs, jobs,
+# salaries) because those all gate on can_access_osbb()/user_allowed_osbbs(),
+# which return False/[] for anyone not in ACCESS_MAP or CHAIRMAN_ID.
+# Add a new person here (same pattern) to give them the same one-button view.
+READONLY_VIEWERS: dict[int, dict[str, str]] = {
+    5186498707: {"name": "Сокол Микола Миколайович", "keyword": "Сокол"},
+    396484643: {"name": "Денисюк Станіслав Станіславович", "keyword": "Денисюк"},
+}
 
 ACCESS_MAP = {
     5178201242: ["ВП-16", "Е21"],
@@ -211,8 +215,16 @@ def is_chairman(user_id: int) -> bool:
     return user_id == CHAIRMAN_ID
 
 
-def is_sokol(user_id: int) -> bool:
-    return user_id == SOKOL_ID
+def is_readonly_viewer(user_id: int) -> bool:
+    return user_id in READONLY_VIEWERS
+
+
+def readonly_keyword(user_id: int) -> str:
+    return READONLY_VIEWERS[user_id]["keyword"]
+
+
+def readonly_name(user_id: int) -> str:
+    return READONLY_VIEWERS[user_id]["name"]
 
 
 def can_access_osbb(user_id: int, osbb: str) -> bool:
@@ -373,7 +385,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def sokol_menu() -> ReplyKeyboardMarkup:
+def readonly_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="🔄 Оновити статус")]],
         resize_keyboard=True,
@@ -730,39 +742,40 @@ async def noop(cb: CallbackQuery) -> None:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext) -> None:
     await state.clear()
-    if is_sokol(m.from_user.id):
+    if is_readonly_viewer(m.from_user.id):
         await m.answer(
-            "👋 Вітаємо, Сокол Микола Миколайович.\n"
+            f"👋 Вітаємо, {readonly_name(m.from_user.id)}.\n"
             "Натисніть кнопку нижче, щоб побачити актуальний статус ваших актів.",
-            reply_markup=sokol_menu(),
+            reply_markup=readonly_menu(),
         )
         return
     await m.answer("👋 Система готова.", reply_markup=main_menu())
 
 
 @dp.message(F.text == "🔄 Оновити статус")
-async def sokol_refresh_status(m: types.Message, state: FSMContext) -> None:
-    if not is_sokol(m.from_user.id):
+async def readonly_refresh_status(m: types.Message, state: FSMContext) -> None:
+    if not is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
+    keyword = readonly_keyword(m.from_user.id)
     rows = await db_fetch_all(
         "SELECT number, osbb, status, created_at FROM acts WHERE descr LIKE ? ORDER BY osbb ASC, id ASC",
-        (f"%{SOKOL_KEYWORD}%",),
+        (f"%{keyword}%",),
     )
     if not rows:
-        await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=sokol_menu())
+        await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=readonly_menu())
         return
     text = "📄 <b>Актуальний статус ваших актів:</b>\n\n"
     for row in rows:
         text += f"№{row['number']} ({row['osbb']}) — {row['status']} [{row['created_at']}]\n"
-    await m.answer(text, parse_mode="HTML", reply_markup=sokol_menu())
+    await m.answer(text, parse_mode="HTML", reply_markup=readonly_menu())
 
 
 @dp.message(F.text == "⬅️ Назад")
 async def m_back(m: types.Message, state: FSMContext) -> None:
     await state.clear()
-    if is_sokol(m.from_user.id):
-        await m.answer("Меню:", reply_markup=sokol_menu())
+    if is_readonly_viewer(m.from_user.id):
+        await m.answer("Меню:", reply_markup=readonly_menu())
         return
     await m.answer("Головне меню:", reply_markup=main_menu())
 
@@ -776,7 +789,7 @@ async def back_to_menu_inline(cb: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(F.text == "📄 Акти")
 async def m_acts(m: types.Message, state: FSMContext) -> None:
-    if is_sokol(m.from_user.id):
+    if is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
     await m.answer("АКТИ", reply_markup=acts_menu())
@@ -784,7 +797,7 @@ async def m_acts(m: types.Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "🧾 Чеки ОСББ")
 async def m_docs(m: types.Message, state: FSMContext) -> None:
-    if is_sokol(m.from_user.id):
+    if is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
     await m.answer("ЧЕКИ", reply_markup=docs_menu())
@@ -792,7 +805,7 @@ async def m_docs(m: types.Message, state: FSMContext) -> None:
 
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
 async def show_items(m: types.Message, state: FSMContext) -> None:
-    if is_sokol(m.from_user.id):
+    if is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
     archive = "Архів" in (m.text or "")
@@ -1170,7 +1183,7 @@ async def toggle_salary(cb: CallbackQuery, callback_data: SalaryCb) -> None:
 
 @dp.message(F.text == "🛠️ План робіт")
 async def jobs_main_menu(m: types.Message, state: FSMContext) -> None:
-    if is_sokol(m.from_user.id):
+    if is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
     await m.answer("🛠️ <b>Керування планом робіт по ОСББ:</b>", reply_markup=jobs_menu(), parse_mode="HTML")
