@@ -116,6 +116,10 @@ class JobCommentForm(StatesGroup):
     text = State()
 
 
+class SearchForm(StatesGroup):
+    query = State()
+
+
 class OsbbCb(CallbackData, prefix="osbb"):
     flow: str
     osbb: str
@@ -160,6 +164,10 @@ class PageCb(CallbackData, prefix="page"):
     page: int = 0
     year: str = "-"
     period: str = "-"
+
+
+class SearchCb(CallbackData, prefix="search"):
+    section: Literal["acts", "docs", "jobs"]
 
 
 @dataclass(frozen=True)
@@ -343,7 +351,8 @@ def acts_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
-            [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="📦 ZIP Архів")],
+            [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="🔎 Пошук актів")],
+            [KeyboardButton(text="📦 ZIP Архів")],
             [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
@@ -354,7 +363,8 @@ def docs_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
-            [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="⬅️ Назад")],
+            [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="🔎 Пошук чеків")],
+            [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
     )
@@ -364,7 +374,8 @@ def jobs_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавити роботу"), KeyboardButton(text="📋 Поточні роботи")],
-            [KeyboardButton(text="✅ Виконані роботи"), KeyboardButton(text="⬅️ Назад")],
+            [KeyboardButton(text="✅ Виконані роботи"), KeyboardButton(text="🔎 Пошук робіт")],
+            [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
     )
@@ -537,9 +548,117 @@ async def render_items_page(message: types.Message, table: str, archive: bool, u
     visible = rows[start : start + PAGE_SIZE]
     title = "Акти" if table == "acts" else "Чеки"
     mode = "архів" if archive else "поточні"
-    await message.answer(f"📋 <b>{title}: {mode}</b> ({start + 1}-{start + len(visible)} з {len(rows)})", parse_mode="HTML", reply_markup=page_keyboard("items", table, archive, osbb, page, len(rows)))
+    await message.answer(f"📋 <b>{title}: {mode}</b> ({start + 1}-{start + len(visible)} з {len(rows)})", parse_mode="HTML")
     for row in visible:
         await send_item_card(message.chat.id, row, table, user_id, archive)
+    markup = page_keyboard("items", table, archive, osbb, page, len(rows))
+    if markup:
+        await message.answer("Сторінки:", reply_markup=markup)
+
+
+def section_from_search_text(text: str) -> str | None:
+    if "акт" in text:
+        return "acts"
+    if "чек" in text:
+        return "docs"
+    if "роб" in text:
+        return "jobs"
+    return None
+
+
+def search_title(section: str) -> str:
+    return {"acts": "актах", "docs": "чеках", "jobs": "роботах"}[section]
+
+
+async def search_records(section: str, query: str, user_id: int) -> list[dict[str, Any]]:
+    allowed = user_allowed_osbbs(user_id)
+    if not allowed:
+        return []
+    like = f"%{query}%"
+    upper_like = f"%{query.upper()}%"
+    limit = 25
+
+    if section == "acts":
+        where = "(number LIKE ? OR descr LIKE ? OR osbb LIKE ? OR status LIKE ?)"
+        params: list[Any] = [like, like, upper_like, like]
+        if not is_chairman(user_id):
+            placeholders = ",".join("?" for _ in allowed)
+            where += f" AND osbb IN ({placeholders})"
+            params.extend(allowed)
+        params.append(limit)
+        return await db_fetch_all(
+            f"SELECT id, number AS title, osbb, descr, file_id, status, created_at FROM acts WHERE {where} ORDER BY id DESC LIMIT ?",
+            params,
+        )
+
+    if section == "docs":
+        where = "(name LIKE ? OR osbb LIKE ? OR status LIKE ?)"
+        params = [like, upper_like, like]
+        if not is_chairman(user_id):
+            placeholders = ",".join("?" for _ in allowed)
+            where += f" AND osbb IN ({placeholders})"
+            params.extend(allowed)
+        params.append(limit)
+        return await db_fetch_all(
+            f"SELECT id, name AS title, osbb, '' AS descr, file_id, status, created_at FROM docs WHERE {where} ORDER BY id DESC LIMIT ?",
+            params,
+        )
+
+    if section == "jobs":
+        where = "(CAST(id AS TEXT) LIKE ? OR task_text LIKE ? OR osbb LIKE ? OR month_year LIKE ? OR status LIKE ? OR stages LIKE ? OR comments LIKE ?)"
+        params = [like, like, upper_like, like, like, like, like]
+        if not is_chairman(user_id):
+            placeholders = ",".join("?" for _ in allowed)
+            where += f" AND osbb IN ({placeholders})"
+            params.extend(allowed)
+        params.append(limit)
+        return await db_fetch_all(
+            f"SELECT id, osbb, month_year, task_text, status, stages, comments, updated_at, created_at FROM jobs WHERE {where} ORDER BY id DESC LIMIT ?",
+            params,
+        )
+    return []
+
+
+@dp.message(F.text.in_(["🔎 Пошук актів", "🔎 Пошук чеків", "🔎 Пошук робіт"]))
+async def start_search(m: types.Message, state: FSMContext) -> None:
+    await state.clear()
+    section = section_from_search_text(m.text or "")
+    if not section:
+        return await m.answer("Не вдалося визначити розділ пошуку.")
+    await state.update_data(section=section)
+    await state.set_state(SearchForm.query)
+    await m.answer(
+        f"🔎 Введіть запит для пошуку в {search_title(section)}.\n"
+        "Можна шукати за номером/ID, описом, назвою, ОСББ або статусом."
+    )
+
+
+@dp.message(SearchForm.query)
+async def run_search(m: types.Message, state: FSMContext) -> None:
+    query = (m.text or "").strip()
+    data = await state.get_data()
+    section = data.get("section")
+    if not section:
+        await state.clear()
+        return await m.answer("Пошук скинуто. Оберіть розділ ще раз.")
+    if len(query) < 2:
+        return await m.answer("Введіть мінімум 2 символи для пошуку.")
+
+    rows = await search_records(section, query, m.from_user.id)
+    await state.clear()
+    if not rows:
+        return await m.answer(f"📭 Нічого не знайдено за запитом: {query}")
+
+    await m.answer(f"🔎 Знайдено {len(rows)} результат(ів) за запитом: <b>{query}</b>", parse_mode="HTML")
+    if section in {"acts", "docs"}:
+        for row in rows:
+            await send_item_card(m.chat.id, row, section, m.from_user.id, archive=False)
+        return
+
+    for row in rows:
+        text, markup = await render_job_text_and_kb(int(row["id"]), m.from_user.id)
+        if text:
+            await m.answer(text, reply_markup=markup, parse_mode="HTML")
 
 
 async def send_item_card(chat_id: int, row: dict[str, Any], table: str, user_id: int, archive: bool = False) -> None:
@@ -707,9 +826,14 @@ async def start_attach_photo(cb: CallbackQuery, callback_data: ItemCb, state: FS
     row = await require_item_access(cb, "acts", callback_data.item_id)
     if not row:
         return
-    await state.update_data(act_id=callback_data.item_id)
+    await state.clear()
+    await state.update_data(act_id=callback_data.item_id, mode="attach_existing")
     await state.set_state(ActAttachPhotoForm.photo)
-    await cb.message.answer("📸 <b>Надішліть фото підписаного або оригінального акту:</b>", parse_mode="HTML")
+    await cb.message.answer(
+        f"📸 <b>Надішліть фото саме для акту №{row['title']} ({row['osbb']}).</b>\n"
+        "Якщо це не той акт, натисніть /start і почніть дію заново.",
+        parse_mode="HTML",
+    )
     await cb.answer()
 
 
@@ -717,6 +841,9 @@ async def start_attach_photo(cb: CallbackQuery, callback_data: ItemCb, state: FS
 async def save_attached_photo(m: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
     act_id = int(data.get("act_id") or 0)
+    if data.get("mode") != "attach_existing":
+        await state.clear()
+        return await m.answer("❌ Втрачено прив'язку до акту. Натисніть кнопку фото під потрібним актом ще раз.")
     row = await get_item("acts", act_id)
     if not row or not can_access_osbb(m.from_user.id, row["osbb"]):
         await state.clear()
@@ -724,7 +851,7 @@ async def save_attached_photo(m: types.Message, state: FSMContext) -> None:
     file_id = m.photo[-1].file_id
     await db_execute("UPDATE acts SET file_id=? WHERE id=?", (file_id, act_id))
     await state.clear()
-    await m.answer("✅ Фото акту успішно додано/оновлено!")
+    await m.answer(f"✅ Фото додано до акту №{row['title']} ({row['osbb']}).")
     row["file_id"] = file_id
     await send_item_card(m.chat.id, row, "acts", m.from_user.id)
 
@@ -769,25 +896,39 @@ async def act_descr(m: types.Message, state: FSMContext) -> None:
     if not descr:
         return await m.answer("Опис не може бути порожнім.")
     await state.update_data(descr=descr)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏭️ Пропустити (без фото)", callback_data="skip_act_photo")]])
-    await m.answer("Завантажте фото акту або натисніть кнопку нижче, щоб додати його пізніше:", reply_markup=kb)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📷 Додати фото зараз", callback_data="add_act_photo_now")],
+            [InlineKeyboardButton(text="💾 Зберегти без фото", callback_data="skip_act_photo")],
+        ]
+    )
+    await m.answer("Оберіть, як зберегти акт:", reply_markup=kb)
     await state.set_state(ActForm.file)
 
 
-async def create_act_from_state(state: FSMContext, file_id: str) -> None:
+async def create_act_from_state(state: FSMContext, file_id: str) -> int:
     data = await state.get_data()
-    await db_execute(
+    return await db_execute(
         "INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)",
         (data["number"], data["osbb"], data["descr"], file_id, today_date()),
     )
 
 
+@dp.callback_query(F.data == "add_act_photo_now", ActForm.file)
+async def act_file_prompt(cb: CallbackQuery) -> None:
+    await safe_edit_text(cb.message, "📷 Надішліть фото для нового акту.")
+    await cb.answer()
+
+
 @dp.callback_query(F.data == "skip_act_photo", ActForm.file)
 async def act_file_skip(cb: CallbackQuery, state: FSMContext) -> None:
     try:
-        await create_act_from_state(state, "NO_FILE")
+        act_id = await create_act_from_state(state, "NO_FILE")
         await state.clear()
+        row = await get_item("acts", act_id)
         await safe_edit_text(cb.message, "✅ Акт зареєстровано без фото. Його можна додати пізніше перед закриттям.")
+        if row:
+            await send_item_card(cb.message.chat.id, row, "acts", cb.from_user.id)
     except Exception as exc:
         logger.exception("Could not create act without photo")
         await cb.message.answer(f"❌ Помилка реєстрації акту: {exc}")
@@ -797,9 +938,12 @@ async def act_file_skip(cb: CallbackQuery, state: FSMContext) -> None:
 @dp.message(ActForm.file, F.photo)
 async def act_file(m: types.Message, state: FSMContext) -> None:
     try:
-        await create_act_from_state(state, m.photo[-1].file_id)
+        act_id = await create_act_from_state(state, m.photo[-1].file_id)
         await state.clear()
         await m.answer("✅ Акт успішно зареєстровано з фото!", reply_markup=acts_menu())
+        row = await get_item("acts", act_id)
+        if row:
+            await send_item_card(m.chat.id, row, "acts", m.from_user.id)
     except Exception as exc:
         logger.exception("Could not create act with photo")
         await m.answer(f"❌ Помилка реєстрації акту: {exc}")
@@ -1029,12 +1173,14 @@ async def render_jobs_page(message: types.Message, user_id: int, osbb: str, page
         return await message.answer(f"📭 Активних робіт по {osbb} немає.")
     start = page * PAGE_SIZE
     visible = rows[start : start + PAGE_SIZE]
-    markup = page_keyboard("jobs", "", False, osbb, page, len(rows))
-    await message.answer(f"🛠️ <b>Поточні роботи {osbb}</b> ({start + 1}-{start + len(visible)} з {len(rows)})", parse_mode="HTML", reply_markup=markup)
+    await message.answer(f"🛠️ <b>Поточні роботи {osbb}</b> ({start + 1}-{start + len(visible)} з {len(rows)})", parse_mode="HTML")
     for row in visible:
         text, kb = await render_job_text_and_kb(row["id"], user_id)
         if text:
             await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    markup = page_keyboard("jobs", "", False, osbb, page, len(rows))
+    if markup:
+        await message.answer("Сторінки:", reply_markup=markup)
 
 
 def job_card_markup(job_id: int, status: str, user_id: int) -> InlineKeyboardMarkup | None:
