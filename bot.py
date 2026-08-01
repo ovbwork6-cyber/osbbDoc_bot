@@ -42,6 +42,13 @@ if not CHAIRMAN_ID_RAW.isdigit():
 
 CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
 
+# Read-only user: sees only the status of acts whose description contains "Сокол",
+# across all OSBB. Not part of ACCESS_MAP on purpose — this keeps him locked out
+# of every other flow (acts list/create, docs, jobs, salaries) because those all
+# gate on can_access_osbb()/user_allowed_osbbs(), which return False/[] for him.
+SOKOL_ID = 5186498707
+SOKOL_KEYWORD = "Сокол"
+
 ACCESS_MAP = {
     5178201242: ["ВП-16", "Е21"],
     1332732213: ["ОКПТ", "В19"],
@@ -204,6 +211,10 @@ def is_chairman(user_id: int) -> bool:
     return user_id == CHAIRMAN_ID
 
 
+def is_sokol(user_id: int) -> bool:
+    return user_id == SOKOL_ID
+
+
 def can_access_osbb(user_id: int, osbb: str) -> bool:
     return osbb in user_allowed_osbbs(user_id)
 
@@ -223,29 +234,41 @@ def _connect() -> sqlite3.Connection:
 
 
 def _fetch_all(sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         cur = conn.execute(sql, tuple(params))
         return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
 
 
 def _fetch_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         cur = conn.execute(sql, tuple(params))
         row = cur.fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def _execute(sql: str, params: Iterable[Any] = ()) -> int:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         cur = conn.execute(sql, tuple(params))
         conn.commit()
         return int(cur.lastrowid or cur.rowcount or 0)
+    finally:
+        conn.close()
 
 
 def _execute_many(sql: str, rows: Iterable[Iterable[Any]]) -> None:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         conn.executemany(sql, [tuple(row) for row in rows])
         conn.commit()
+    finally:
+        conn.close()
 
 
 async def db_fetch_all(sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
@@ -267,7 +290,8 @@ async def db_execute_many(sql: str, rows: Iterable[Iterable[Any]]) -> None:
 
 
 def init_db_sync() -> None:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=5000")
@@ -330,6 +354,8 @@ def init_db_sync() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_osbb_status_date ON jobs(osbb, status, created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_salaries_osbb_month ON salaries(osbb, month_year)")
         conn.commit()
+    finally:
+        conn.close()
 
 
 async def init_db() -> None:
@@ -343,6 +369,13 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🛠️ План робіт"), KeyboardButton(text="📊 Прозвітувати")],
             [KeyboardButton(text="💰 Зарплати")],
         ],
+        resize_keyboard=True,
+    )
+
+
+def sokol_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔄 Оновити статус")]],
         resize_keyboard=True,
     )
 
@@ -697,12 +730,40 @@ async def noop(cb: CallbackQuery) -> None:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext) -> None:
     await state.clear()
+    if is_sokol(m.from_user.id):
+        await m.answer(
+            "👋 Вітаємо, Сокол Микола Миколайович.\n"
+            "Натисніть кнопку нижче, щоб побачити актуальний статус ваших актів.",
+            reply_markup=sokol_menu(),
+        )
+        return
     await m.answer("👋 Система готова.", reply_markup=main_menu())
+
+
+@dp.message(F.text == "🔄 Оновити статус")
+async def sokol_refresh_status(m: types.Message, state: FSMContext) -> None:
+    if not is_sokol(m.from_user.id):
+        return
+    await state.clear()
+    rows = await db_fetch_all(
+        "SELECT number, osbb, status, created_at FROM acts WHERE descr LIKE ? ORDER BY osbb ASC, id ASC",
+        (f"%{SOKOL_KEYWORD}%",),
+    )
+    if not rows:
+        await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=sokol_menu())
+        return
+    text = "📄 <b>Актуальний статус ваших актів:</b>\n\n"
+    for row in rows:
+        text += f"№{row['number']} ({row['osbb']}) — {row['status']} [{row['created_at']}]\n"
+    await m.answer(text, parse_mode="HTML", reply_markup=sokol_menu())
 
 
 @dp.message(F.text == "⬅️ Назад")
 async def m_back(m: types.Message, state: FSMContext) -> None:
     await state.clear()
+    if is_sokol(m.from_user.id):
+        await m.answer("Меню:", reply_markup=sokol_menu())
+        return
     await m.answer("Головне меню:", reply_markup=main_menu())
 
 
@@ -715,18 +776,24 @@ async def back_to_menu_inline(cb: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(F.text == "📄 Акти")
 async def m_acts(m: types.Message, state: FSMContext) -> None:
+    if is_sokol(m.from_user.id):
+        return
     await state.clear()
     await m.answer("АКТИ", reply_markup=acts_menu())
 
 
 @dp.message(F.text == "🧾 Чеки ОСББ")
 async def m_docs(m: types.Message, state: FSMContext) -> None:
+    if is_sokol(m.from_user.id):
+        return
     await state.clear()
     await m.answer("ЧЕКИ", reply_markup=docs_menu())
 
 
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
 async def show_items(m: types.Message, state: FSMContext) -> None:
+    if is_sokol(m.from_user.id):
+        return
     await state.clear()
     archive = "Архів" in (m.text or "")
     table = "acts" if "акт" in (m.text or "").lower() else "docs"
@@ -1103,6 +1170,8 @@ async def toggle_salary(cb: CallbackQuery, callback_data: SalaryCb) -> None:
 
 @dp.message(F.text == "🛠️ План робіт")
 async def jobs_main_menu(m: types.Message, state: FSMContext) -> None:
+    if is_sokol(m.from_user.id):
+        return
     await state.clear()
     await m.answer("🛠️ <b>Керування планом робіт по ОСББ:</b>", reply_markup=jobs_menu(), parse_mode="HTML")
 
