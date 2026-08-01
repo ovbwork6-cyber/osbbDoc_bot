@@ -50,7 +50,7 @@ CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
 # Add a new person here (same pattern) to give them the same one-button view.
 READONLY_VIEWERS: dict[int, dict[str, Any]] = {
     5186498707: {"name": "Сокол Микола Миколайович", "keywords": ["Сокол"]},
-    396484643: {"name": "Денисюк Станіслав Станіславович", "keywords": ["Денисюк", "ТО"]},
+    396484643: {"name": "Денисюк Станіслав Станіславович", "keywords": ["Денисюк", "ТО ІТП"]},
 }
 
 ACCESS_MAP = {
