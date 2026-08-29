@@ -42,12 +42,6 @@ if not CHAIRMAN_ID_RAW.isdigit():
 
 CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
 
-# Read-only viewers: each sees only the status of acts whose description contains
-# their keyword, across all OSBB. None of them are part of ACCESS_MAP on purpose —
-# this keeps them locked out of every other flow (acts list/create, docs, jobs,
-# salaries) because those all gate on can_access_osbb()/user_allowed_osbbs(),
-# which return False/[] for anyone not in ACCESS_MAP or CHAIRMAN_ID.
-# Add a new person here (same pattern) to give them the same one-button view.
 READONLY_VIEWERS: dict[int, dict[str, Any]] = {
     5186498707: {"name": "Сокол Микола Миколайович", "keywords": ["Сокол"]},
     396484643: {"name": "Денисюк Станіслав Станіславович", "keywords": ["Денисюк", "ТО ІТП"]},
@@ -152,10 +146,11 @@ class ItemCb(CallbackData, prefix="item"):
 
 
 class SalaryCb(CallbackData, prefix="sal"):
-    action: Literal["view", "hist", "list", "gen", "toggle", "back"]
+    action: Literal["view", "hist", "list", "gen", "toggle", "back", "rep_years", "rep_gen"]
     osbb: str = ""
     month_year: str = ""
     salary_id: int = 0
+    year: str = ""
 
 
 class JobCb(CallbackData, prefix="job"):
@@ -194,7 +189,7 @@ class ItemRow:
 
 def get_seasonal_salary() -> int:
     month = datetime.now().month
-    return 4500 if 4 <= month <= 9 else 3500
+    return 3500 if 4 <= month <= 10 else 4500
 
 
 def today_date() -> str:
@@ -298,7 +293,7 @@ async def db_execute(sql: str, params: Iterable[Any] = ()) -> int:
 
 async def db_execute_many(sql: str, rows: Iterable[Iterable[Any]]) -> None:
     async with DB_WRITE_LOCK:
-        await asyncio.to_thread(_execute_many, sql, [tuple(row) for row in rows])
+        return await asyncio.to_thread(_execute_many, sql, [tuple(row) for row in rows])
 
 
 def init_db_sync() -> None:
@@ -1102,6 +1097,7 @@ async def view_salaries_options(cb: CallbackQuery, callback_data: OsbbCb) -> Non
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Поточний місяць", callback_data=SalaryCb(action="list", osbb=osbb, month_year=current_month_year()).pack())],
             [InlineKeyboardButton(text="📂 Архів виплат", callback_data=SalaryCb(action="hist", osbb=osbb).pack())],
+            [InlineKeyboardButton(text="📊 Звіт за рік", callback_data=SalaryCb(action="rep_years", osbb=osbb).pack())],
             [InlineKeyboardButton(text="🔙 Назад", callback_data=SalaryCb(action="back").pack())],
         ]
     )
@@ -1181,6 +1177,59 @@ async def toggle_salary(cb: CallbackQuery, callback_data: SalaryCb) -> None:
     new_status = "⏳ Очікує" if row["status"] == "✅ Видано" else "✅ Видано"
     await db_execute("UPDATE salaries SET status=? WHERE id=?", (new_status, callback_data.salary_id))
     await show_salary_list(cb, SalaryCb(action="list", osbb=callback_data.osbb, month_year=callback_data.month_year))
+
+
+@dp.callback_query(SalaryCb.filter(F.action == "rep_years"))
+async def salary_report_years(cb: CallbackQuery, callback_data: SalaryCb) -> None:
+    if not is_chairman(cb.from_user.id):
+        return await answer_forbidden(cb)
+    current_year = datetime.now().year
+    start_year = 2026
+    rows = []
+    for y in range(start_year, current_year + 1):
+        rows.append([InlineKeyboardButton(text=f"📅 {y} рік", callback_data=SalaryCb(action="rep_gen", osbb=callback_data.osbb, year=str(y)).pack())])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data=OsbbCb(flow="salary", osbb=callback_data.osbb).pack())])
+    await safe_edit_text(cb.message, f"📊 <b>Звіт по зарплатам {callback_data.osbb}</b>\nОберіть рік:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(SalaryCb.filter(F.action == "rep_gen"))
+async def salary_report_gen(cb: CallbackQuery, callback_data: SalaryCb) -> None:
+    if not is_chairman(cb.from_user.id):
+        return await answer_forbidden(cb)
+    osbb = callback_data.osbb
+    year = callback_data.year
+    await cb.answer("📈 Формую звіт по зарплатам...")
+    
+    salary_pattern = f"%.{year}"
+    salaries = await db_fetch_all("SELECT month_year, employee, amount, status FROM salaries WHERE osbb=? AND month_year LIKE ? ORDER BY id ASC", (osbb, salary_pattern))
+    
+    lines = [
+        "=" * 50,
+        f"     ЗВІТ ПО ЗАРПЛАТАМ ДЛЯ {osbb}",
+        f"     РІК: {year}",
+        f"     Дата генерації: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "=" * 50,
+        ""
+    ]
+    
+    if not salaries:
+        lines.append(f"Дані про виплату заробітної плати за {year} рік відсутні.\n")
+    else:
+        total_salary = 0.0
+        for row in salaries:
+            amount = float(row["amount"] or 0)
+            lines.append(f"• [{row['month_year']}] {row['employee']}: {amount:g} грн — {row['status']}")
+            if "Видано" in row["status"]:
+                total_salary += amount
+        lines.append(f"\n👉 Усього фактично виплачено (статус 'Видано') за {year} рік: {total_salary:g} грн\n")
+    
+    lines.extend(["=" * 50, "Кінець звіту."])
+    report_text = "\n".join(lines)
+    
+    report_file = io.BytesIO(report_text.encode("utf-8"))
+    txt_document = types.BufferedInputFile(report_file.read(), filename=f"Salary_Report_{osbb}_{year}.txt")
+    await bot.send_document(cb.message.chat.id, txt_document, caption=f"💰 Звіт по зарплатам {osbb} за {year} рік")
 
 
 @dp.message(F.text == "🛠️ План робіт")
@@ -1508,14 +1557,12 @@ def report_period_title(year: str, period: str) -> str:
 async def generate_and_send_report_file(chat_id: int, osbb: str, year: str, period: str) -> None:
     try:
         date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
-        salary_pattern = f"%.{year}" if period == "all" else f"{period}.{year}"
         title = report_period_title(year, period)
         acts = await db_fetch_all("SELECT number, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
         docs = await db_fetch_all("SELECT name, file_id, status, created_at FROM docs WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
-        salaries = await db_fetch_all("SELECT month_year, employee, amount, status FROM salaries WHERE osbb=? AND month_year LIKE ?", (osbb, salary_pattern))
         jobs = await db_fetch_all("SELECT task_text, stages, comments, updated_at, month_year FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
 
-        report = build_report_text(osbb, title, acts, docs, salaries, jobs)
+        report = build_report_text(osbb, title, acts, docs, jobs)
         report_file = io.BytesIO(report.encode("utf-8"))
         txt_document = types.BufferedInputFile(report_file.read(), filename=f"Report_{osbb}_{period}_{year}.txt")
         await bot.send_document(chat_id, txt_document, caption=f"📄 Фінансовий звіт {osbb} за {title}")
@@ -1526,7 +1573,7 @@ async def generate_and_send_report_file(chat_id: int, osbb: str, year: str, peri
         await bot.send_message(chat_id, "❌ Помилка під час формування звіту. Деталі записані в лог.")
 
 
-def build_report_text(osbb: str, title: str, acts: list[dict[str, Any]], docs: list[dict[str, Any]], salaries: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> str:
+def build_report_text(osbb: str, title: str, acts: list[dict[str, Any]], docs: list[dict[str, Any]], jobs: list[dict[str, Any]]) -> str:
     lines = [
         "=" * 50,
         f"     ФІНАНСОВО-ГОСПОДАРСЬКИЙ ЗВІТ ДЛЯ {osbb}",
@@ -1554,19 +1601,7 @@ def build_report_text(osbb: str, title: str, acts: list[dict[str, Any]], docs: l
     else:
         lines.append("Чеки за вказаний період відсутні.\n")
 
-    lines.extend(["💰 3. ВІДОМІСТЬ НАРАХУВАННЯ ТА ВИПЛАТИ ЗАРПЛАТ", "-" * 50])
-    total_salary = 0.0
-    if salaries:
-        for row in salaries:
-            amount = float(row["amount"] or 0)
-            lines.append(f"• [{row['month_year']}] {row['employee']}: {amount:g} грн — {row['status']}")
-            if "Видано" in row["status"]:
-                total_salary += amount
-        lines.append(f"\n👉 Усього виплачено за відомостями: {total_salary:g} грн\n")
-    else:
-        lines.append("Дані про виплату заробітної плати відсутні.\n")
-
-    lines.extend(["🛠️ 4. ГОСПОДАРСЬКІ РОБОТИ (ЗАКРИТІ ЗАДАЧІ ЗА ПЕРІОД)", "-" * 50])
+    lines.extend(["🛠️ 3. ГОСПОДАРСЬКІ РОБОТИ (ЗАКРИТІ ЗАДАЧІ ЗА ПЕРІОД)", "-" * 50])
     if jobs:
         for row in jobs:
             lines.append(f"• Задача (план на {row['month_year']}): {row['task_text']}")
