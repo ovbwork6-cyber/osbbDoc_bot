@@ -1345,4 +1345,4 @@ def register_handlers(dp: Any, bot: Any) -> None:
         db.execute(f"UPDATE organizations SET {field}=? WHERE id=?",(code,org_id))
         _audit(cb.from_user.id,"rotate_join_code","organization",org_id,org["name"],kind)
         await cb.message.answer(f"Новий код {'мешканців' if kind=='user' else 'Leadership'} для {org['name']}:\n<code>{code}</code>",parse_mode="HTML")
-        await cb.answer("Код змінено.")\n
+        await cb.answer("Код змінено.")

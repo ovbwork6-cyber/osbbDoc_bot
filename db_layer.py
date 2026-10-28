@@ -356,4 +356,4 @@ def create_join_code() -> str:
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")\n
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

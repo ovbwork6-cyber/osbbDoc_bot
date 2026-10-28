@@ -123,4 +123,4 @@ def readonly_name(telegram_id: int) -> str:
 def user_allowed_osbbs(telegram_id: int) -> list[str]:
     if is_superadmin(telegram_id):
         return [r["name"] for r in db_layer.fetch_all("SELECT name FROM organizations WHERE active=1 ORDER BY name")]
-    return [r["name"] for r in memberships_for(telegram_id)]\n
+    return [r["name"] for r in memberships_for(telegram_id)]
