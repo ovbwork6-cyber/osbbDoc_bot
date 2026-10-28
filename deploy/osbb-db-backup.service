@@ -1,0 +1,10 @@
+[Unit]
+Description=Create a consistent OSBB bot database backup
+
+[Service]
+Type=oneshot
+User=osbb-bot
+Group=osbb-bot
+EnvironmentFile=/etc/osbbbot.env
+ExecStart=/opt/osbbDoc_bot/deploy/osbb-db-backup.sh
+UMask=0077

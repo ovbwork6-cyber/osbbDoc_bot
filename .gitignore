@@ -1,3 +1,11 @@
 .env
-osbb_acts.db
+.env.*
+!.env.example
+data/*.db
+data/*.db-*
+data/*.xlsx
+data/uploads/
 __pycache__/
+*.py[cod]
+.venv/
+venv/

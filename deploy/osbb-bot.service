@@ -1,0 +1,22 @@
+[Unit]
+Description=OSBB Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=osbb-bot
+Group=osbb-bot
+WorkingDirectory=/opt/osbbDoc_bot
+EnvironmentFile=/etc/osbbbot.env
+ExecStart=/opt/osbbDoc_bot/.venv/bin/python /opt/osbbDoc_bot/bot.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/osbb
+
+[Install]
+WantedBy=multi-user.target

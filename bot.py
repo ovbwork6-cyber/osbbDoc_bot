@@ -2,11 +2,12 @@ import asyncio
 import io
 import logging
 import os
-import sqlite3
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Literal
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -21,9 +22,24 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from dotenv import load_dotenv
-
-
 load_dotenv()
+import db_layer
+from access import (
+    SUPERADMIN_ID,
+    can_access_osbb as _can_access_osbb,
+    can_manage_osbb,
+    can_process_osbb,
+    is_chairman as _is_chairman,
+    is_readonly_viewer as _is_readonly_viewer,
+    is_superadmin,
+    readonly_keywords as _readonly_keywords,
+    readonly_name as _readonly_name,
+    user_allowed_osbbs as _user_allowed_osbbs,
+    roles_for,
+)
+from portal import main_menu_for_user, register_handlers as register_portal_handlers, resident_period_reminder_worker, upsert_user
+
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -31,46 +47,17 @@ logging.basicConfig(
 logger = logging.getLogger("osbb_bot")
 
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
-CHAIRMAN_ID_RAW = os.getenv("CHAIRMAN_ID", "").strip()
-DB_PATH = os.getenv("OSBB_DB_PATH", "osbb_acts.db")
+CHAIRMAN_ID_RAW = os.getenv("SUPERADMIN_ID") or os.getenv("CHAIRMAN_ID", "")
+DB_PATH = str(db_layer.DB_PATH)
 PAGE_SIZE = int(os.getenv("BOT_PAGE_SIZE", "5"))
+LOCAL_TZ = ZoneInfo("Europe/Kyiv")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 if not CHAIRMAN_ID_RAW.isdigit():
-    raise RuntimeError("CHAIRMAN_ID must be numeric")
+    raise RuntimeError("SUPERADMIN_ID must be numeric")
 
 CHAIRMAN_ID = int(CHAIRMAN_ID_RAW)
-
-READONLY_VIEWERS: dict[int, dict[str, Any]] = {
-    5186498707: {"name": "Сокол Микола Миколайович", "keywords": ["Сокол"]},
-    396484643: {"name": "Денисюк Станіслав Станіславович", "keywords": ["Денисюк", "ТО ІТП"]},
-}
-
-ACCESS_MAP = {
-    5178201242: ["ВП-16", "Е21"],
-    1332732213: ["ОКПТ", "В19"],
-}
-
-STAFF_CONFIG = {
-    "ВП-16": {
-        "Голова": 6000,
-        "Бухгалтер": 3000,
-        "Прибирання (Марія)": 9500,
-        "Прибирання (Олег)": 3000,
-        "Сантехнік": 2800,
-    },
-    "Е21": {"Голова": 6000, "Бухгалтер": 3000, "Сантехнік": 1000, "Двірник": "seasonal"},
-    "ОКПТ": {
-        "Голова": 4000,
-        "Бухгалтер": 1000,
-        "Нарахування ВТВК": 1000,
-        "Двірник": 2000,
-        "Обхідник": 1000,
-        "Баки": 1000,
-    },
-    "В19": {"Голова": 4820, "Сантехнік": 2500, "Бухгалтер": 2500, "Бухгалтер (ФОП)": 500},
-}
 
 MONTHS_UA = {
     "01": "Січень",
@@ -89,8 +76,6 @@ MONTHS_UA = {
 
 VALID_TABLES = {"acts", "docs"}
 FINAL_STATUSES = ("Завершено!", "Роботу завершено")
-DB_WRITE_LOCK = asyncio.Lock()
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -98,8 +83,15 @@ dp = Dispatcher()
 class ActForm(StatesGroup):
     number = State()
     osbb = State()
+    performer = State()
+    amount = State()
     descr = State()
     file = State()
+
+
+class ItemPaymentForm(StatesGroup):
+    amount = State()
+    comment = State()
 
 
 class ActAttachPhotoForm(StatesGroup):
@@ -115,6 +107,8 @@ class DocForm(StatesGroup):
 class JobForm(StatesGroup):
     osbb = State()
     text = State()
+    priority = State()
+    deadline = State()
 
 
 class JobCommentForm(StatesGroup):
@@ -154,7 +148,7 @@ class SalaryCb(CallbackData, prefix="sal"):
 
 
 class JobCb(CallbackData, prefix="job"):
-    action: Literal["view", "add", "month", "act", "fin"]
+    action: Literal["view", "add", "month", "priority", "act", "fin"]
     osbb: str = ""
     job_id: int = 0
     mode: str = ""
@@ -193,37 +187,61 @@ def get_seasonal_salary() -> int:
 
 
 def today_date() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
 
 def current_month_year() -> str:
-    return datetime.now().strftime("%m.%Y")
+    return datetime.now(LOCAL_TZ).strftime("%m.%Y")
 
 
 def user_allowed_osbbs(user_id: int) -> list[str]:
-    if user_id == CHAIRMAN_ID:
-        return list(STAFF_CONFIG.keys())
-    return ACCESS_MAP.get(user_id, [])
+    return _user_allowed_osbbs(user_id)
 
 
 def is_chairman(user_id: int) -> bool:
-    return user_id == CHAIRMAN_ID
+    return _is_chairman(user_id)
 
 
 def is_readonly_viewer(user_id: int) -> bool:
-    return user_id in READONLY_VIEWERS
+    return _is_readonly_viewer(user_id)
 
 
-def readonly_keywords(user_id: int) -> list[str]:
-    return READONLY_VIEWERS[user_id]["keywords"]
+def readonly_keywords(user_id: int, organization: str | None = None) -> list[str]:
+    return _readonly_keywords(user_id, organization)
 
 
 def readonly_name(user_id: int) -> str:
-    return READONLY_VIEWERS[user_id]["name"]
+    return _readonly_name(user_id)
 
 
 def can_access_osbb(user_id: int, osbb: str) -> bool:
-    return osbb in user_allowed_osbbs(user_id)
+    return _can_access_osbb(user_id, osbb)
+
+
+def can_read_legacy_item(user_id: int, organization: str, table: str) -> bool:
+    roles=roles_for(user_id,organization)
+    if is_superadmin(user_id) or roles & {"admin","accountant","fop"}:
+        return True
+    if table=="acts" and "viewer" in roles:
+        return bool(readonly_keywords(user_id,organization))
+    return False
+
+
+def can_report_osbb(user_id: int, organization: str) -> bool:
+    return can_access_osbb(user_id,organization) and (is_superadmin(user_id) or bool(roles_for(user_id,organization) & {"admin","accountant","fop"}))
+
+
+def can_view_jobs(user_id: int, organization: str) -> bool:
+    return can_access_osbb(user_id,organization) and (is_superadmin(user_id) or bool(roles_for(user_id,organization) & {"admin","accountant","fop","leadership","user"}))
+
+
+def can_view_salary(user_id: int, organization: str) -> bool:
+    return can_access_osbb(user_id,organization) and (is_superadmin(user_id) or bool(roles_for(user_id,organization) & {"admin","accountant","fop"}))
+
+
+def is_limited_viewer(user_id: int, organization: str) -> bool:
+    roles = roles_for(user_id, organization)
+    return "viewer" in roles and not bool(roles & {"admin", "accountant", "fop"}) and not is_superadmin(user_id)
 
 
 async def answer_forbidden(target: CallbackQuery | types.Message):
@@ -234,150 +252,18 @@ async def answer_forbidden(target: CallbackQuery | types.Message):
         await target.answer(text)
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _fetch_all(sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    conn = _connect()
-    try:
-        cur = conn.execute(sql, tuple(params))
-        return [dict(row) for row in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def _fetch_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
-    conn = _connect()
-    try:
-        cur = conn.execute(sql, tuple(params))
-        row = cur.fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-def _execute(sql: str, params: Iterable[Any] = ()) -> int:
-    conn = _connect()
-    try:
-        cur = conn.execute(sql, tuple(params))
-        conn.commit()
-        return int(cur.lastrowid or cur.rowcount or 0)
-    finally:
-        conn.close()
-
-
-def _execute_many(sql: str, rows: Iterable[Iterable[Any]]) -> None:
-    conn = _connect()
-    try:
-        conn.executemany(sql, [tuple(row) for row in rows])
-        conn.commit()
-    finally:
-        conn.close()
-
-
-async def db_fetch_all(sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    return await asyncio.to_thread(_fetch_all, sql, tuple(params))
-
-
-async def db_fetch_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
-    return await asyncio.to_thread(_fetch_one, sql, tuple(params))
-
-
-async def db_execute(sql: str, params: Iterable[Any] = ()) -> int:
-    async with DB_WRITE_LOCK:
-        return await asyncio.to_thread(_execute, sql, tuple(params))
-
-
-async def db_execute_many(sql: str, rows: Iterable[Iterable[Any]]) -> None:
-    async with DB_WRITE_LOCK:
-        return await asyncio.to_thread(_execute_many, sql, [tuple(row) for row in rows])
-
-
-def init_db_sync() -> None:
-    conn = _connect()
-    try:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS acts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                number TEXT,
-                osbb TEXT,
-                descr TEXT,
-                file_id TEXT,
-                status TEXT DEFAULT "Не отримано",
-                created_at TEXT
-            )"""
-        )
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS docs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                osbb TEXT,
-                file_id TEXT,
-                status TEXT DEFAULT "Не отримано",
-                created_at TEXT
-            )"""
-        )
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS salaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                month_year TEXT,
-                employee TEXT,
-                amount REAL,
-                osbb TEXT,
-                status TEXT DEFAULT "⏳ Очікує"
-            )"""
-        )
-        cursor.execute(
-            """CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                osbb TEXT,
-                month_year TEXT,
-                task_text TEXT,
-                status TEXT DEFAULT "Створено",
-                stages TEXT DEFAULT "",
-                comments TEXT DEFAULT "",
-                updated_at TEXT,
-                created_at TEXT
-            )"""
-        )
-        for sql in (
-            "ALTER TABLE acts ADD COLUMN created_at TEXT",
-            "ALTER TABLE docs ADD COLUMN created_at TEXT",
-            "ALTER TABLE jobs ADD COLUMN updated_at TEXT",
-            "ALTER TABLE jobs ADD COLUMN created_at TEXT",
-        ):
-            try:
-                cursor.execute(sql)
-            except sqlite3.OperationalError:
-                pass
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_acts_osbb_status_date ON acts(osbb, status, created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_docs_osbb_status_date ON docs(osbb, status, created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_osbb_status_date ON jobs(osbb, status, created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_salaries_osbb_month ON salaries(osbb, month_year)")
-        conn.commit()
-    finally:
-        conn.close()
-
-
 async def init_db() -> None:
-    await asyncio.to_thread(init_db_sync)
+    await db_layer.init_db(CHAIRMAN_ID)
+
+
+db_fetch_all = db_layer.db_fetch_all
+db_fetch_one = db_layer.db_fetch_one
+db_execute = db_layer.db_execute
+db_execute_many = db_layer.db_execute_many
 
 
 def main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📄 Акти"), KeyboardButton(text="🧾 Чеки ОСББ")],
-            [KeyboardButton(text="🛠️ План робіт"), KeyboardButton(text="📊 Прозвітувати")],
-            [KeyboardButton(text="💰 Зарплати")],
-        ],
-        resize_keyboard=True,
-    )
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📊 Dashboard"), KeyboardButton(text="📄 Акти")]], resize_keyboard=True)
 
 
 def readonly_menu() -> ReplyKeyboardMarkup:
@@ -387,36 +273,34 @@ def readonly_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def acts_menu() -> ReplyKeyboardMarkup:
+def acts_menu(user_id: int) -> ReplyKeyboardMarkup:
+    rows=[[KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")]]
+    if is_chairman(user_id): rows.append([KeyboardButton(text="➕ Створити Акт")])
+    rows.append([KeyboardButton(text="🔎 Пошук актів")])
+    if is_chairman(user_id): rows.append([KeyboardButton(text="📦 ZIP Архів")])
+    rows.append([KeyboardButton(text="⬅️ Назад")])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")],
-            [KeyboardButton(text="➕ Створити Акт"), KeyboardButton(text="🔎 Пошук актів")],
-            [KeyboardButton(text="📦 ZIP Архів")],
-            [KeyboardButton(text="⬅️ Назад")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
 
-def docs_menu() -> ReplyKeyboardMarkup:
+def docs_menu(user_id: int) -> ReplyKeyboardMarkup:
+    rows=[[KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],[KeyboardButton(text="🔎 Пошук чеків")]]
+    if is_chairman(user_id): rows.append([KeyboardButton(text="➕ Додати PDF чек")])
+    rows.append([KeyboardButton(text="⬅️ Назад")])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],
-            [KeyboardButton(text="➕ Додати PDF чек"), KeyboardButton(text="🔎 Пошук чеків")],
-            [KeyboardButton(text="⬅️ Назад")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
 
-def jobs_menu() -> ReplyKeyboardMarkup:
+def jobs_menu(user_id: int) -> ReplyKeyboardMarkup:
+    rows=[]
+    if is_chairman(user_id): rows.append([KeyboardButton(text="➕ Добавити роботу")])
+    rows += [[KeyboardButton(text="📋 Поточні роботи")],[KeyboardButton(text="✅ Виконані роботи"),KeyboardButton(text="🔎 Пошук робіт")],[KeyboardButton(text="⬅️ Назад")]]
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="➕ Добавити роботу"), KeyboardButton(text="📋 Поточні роботи")],
-            [KeyboardButton(text="✅ Виконані роботи"), KeyboardButton(text="🔎 Пошук робіт")],
-            [KeyboardButton(text="⬅️ Назад")],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
     )
 
@@ -474,33 +358,37 @@ def item_keyboard(item_id: int, status: str, table: str, user_id: int, file_id: 
         return None
     rows: list[list[InlineKeyboardButton]] = []
     has_photo = bool(file_id and file_id != "NO_FILE")
-    ch = is_chairman(user_id)
+    item = db_layer.fetch_one(f"SELECT osbb FROM {table} WHERE id=?", (item_id,))
+    organization = item["osbb"] if item else ""
+    roles = roles_for(user_id, organization) if organization else set()
+    is_admin = bool(roles & {"admin", "fop"}) or is_superadmin(user_id)
+    is_accountant = bool(roles & {"accountant"}) or is_superadmin(user_id)
 
     if table == "acts":
         if status == "Не отримано":
-            if ch:
+            if is_admin:
                 rows.append([InlineKeyboardButton(text="❌ Видалити акт", callback_data=ItemCb(cmd="ask", action="del", table=table, item_id=item_id).pack())])
-            else:
+            if is_accountant:
                 rows.append([InlineKeyboardButton(text="📥 Прийняти акт", callback_data=ItemCb(cmd="ask", action="proc", table=table, item_id=item_id).pack())])
-        elif status == "В роботі" and not ch:
-            rows.append([InlineKeyboardButton(text="💳 Оплачено", callback_data=ItemCb(cmd="ask", action="pay", table=table, item_id=item_id).pack())])
-        elif status == "Акт оплачений" and ch:
+        elif status == "В роботі" and is_accountant:
+            rows.append([InlineKeyboardButton(text="➕ Записати оплату", callback_data=ItemCb(cmd="ask", action="pay", table=table, item_id=item_id).pack())])
+        elif status == "Акт оплачений" and is_admin:
             if has_photo:
                 rows.append([InlineKeyboardButton(text="✅ Завершити", callback_data=ItemCb(cmd="ask", action="fin", table=table, item_id=item_id).pack())])
                 rows.append([InlineKeyboardButton(text="🔄 Оновити фото акту", callback_data=ItemCb(cmd="photo", action="attach", table=table, item_id=item_id).pack())])
             else:
                 rows.append([InlineKeyboardButton(text="📷 Додати фото акту (обов'язково)", callback_data=ItemCb(cmd="photo", action="attach", table=table, item_id=item_id).pack())])
-        if not has_photo and status != "Акт оплачений":
+        if not has_photo and status != "Акт оплачений" and is_admin:
             rows.append([InlineKeyboardButton(text="📷 Завантажити фото", callback_data=ItemCb(cmd="photo", action="attach", table=table, item_id=item_id).pack())])
     else:
         if status == "Не отримано":
-            if ch:
+            if is_admin:
                 rows.append([InlineKeyboardButton(text="❌ Видалити PDF", callback_data=ItemCb(cmd="ask", action="del", table=table, item_id=item_id).pack())])
-            else:
+            if is_accountant:
                 rows.append([InlineKeyboardButton(text="📥 Прийняти чек", callback_data=ItemCb(cmd="ask", action="proc", table=table, item_id=item_id).pack())])
-        elif status == "В роботі" and not ch:
+        elif status == "В роботі" and is_accountant:
             rows.append([InlineKeyboardButton(text="📝 Опрацьовано", callback_data=ItemCb(cmd="ask", action="pay", table=table, item_id=item_id).pack())])
-        elif status == "Опрацьовано" and ch:
+        elif status == "Опрацьовано" and is_admin:
             rows.append([InlineKeyboardButton(text="✅ Завершити", callback_data=ItemCb(cmd="ask", action="fin", table=table, item_id=item_id).pack())])
 
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
@@ -534,10 +422,22 @@ def page_keyboard(kind: str, table: str, archive: bool, osbb: str, page: int, to
 
 async def get_item(table: str, item_id: int) -> dict[str, Any] | None:
     if table == "acts":
-        return await db_fetch_one("SELECT id, number AS title, osbb, descr, file_id, status, created_at FROM acts WHERE id=?", (item_id,))
+        return await db_fetch_one("SELECT id, number AS title, osbb, descr, performer, amount, file_id, status, created_at FROM acts WHERE id=?", (item_id,))
     if table == "docs":
         return await db_fetch_one("SELECT id, name AS title, osbb, '' AS descr, file_id, status, created_at FROM docs WHERE id=?", (item_id,))
     return None
+
+
+async def _paid_total(act_id: int) -> float:
+    row=await db_fetch_one("SELECT COALESCE(SUM(amount),0) total FROM act_payments WHERE act_id=?",(act_id,))
+    return float(row["total"] if row else 0)
+
+
+def _record_item_event(kind: str,item_id: int,event: str,old: str|None,new: str|None,actor: int,comment: str="") -> None:
+    db_layer.execute("INSERT INTO item_events(item_type,item_id,event_type,old_value,new_value,comment,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)",(kind,item_id,event,old,new,comment,actor,db_layer.utc_now()))
+    table={"act":"acts","doc":"docs","job":"jobs"}.get(kind)
+    organization=db_layer.fetch_one(f"SELECT osbb FROM {table} WHERE id=?",(item_id,)) if table else None
+    db_layer.execute("INSERT INTO audit_log(user_id,action,entity_type,entity_id,osbb,old_value,new_value,details,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(actor,event,kind,item_id,organization["osbb"] if organization else None,old,new,comment,db_layer.utc_now()))
 
 
 async def require_item_access(cb: CallbackQuery, table: str, item_id: int) -> dict[str, Any] | None:
@@ -548,6 +448,17 @@ async def require_item_access(cb: CallbackQuery, table: str, item_id: int) -> di
     if not can_access_osbb(cb.from_user.id, row["osbb"]):
         await answer_forbidden(cb)
         return None
+    if not can_read_legacy_item(cb.from_user.id,row["osbb"],table):
+        await answer_forbidden(cb)
+        return None
+    if is_limited_viewer(cb.from_user.id,row["osbb"]):
+        if table != "acts":
+            await answer_forbidden(cb)
+            return None
+        keywords=[k.casefold() for k in readonly_keywords(cb.from_user.id, row["osbb"])]
+        if not keywords or not any(k in f"{row.get('performer') or ''} {row.get('descr') or ''}".casefold() for k in keywords):
+            await answer_forbidden(cb)
+            return None
     return row
 
 
@@ -560,7 +471,7 @@ def status_filter(archive: bool) -> str:
 async def load_items(table: str, archive: bool, user_id: int, osbb: str = "") -> list[dict[str, Any]]:
     if table not in VALID_TABLES:
         return []
-    columns = "id, number AS title, osbb, descr, file_id, status, created_at" if table == "acts" else "id, name AS title, osbb, '' AS descr, file_id, status, created_at"
+    columns = "id, number AS title, osbb, descr, performer, amount, file_id, status, created_at" if table == "acts" else "id, name AS title, osbb, '' AS descr, file_id, status, created_at"
     allowed = user_allowed_osbbs(user_id)
     if not allowed:
         return []
@@ -576,7 +487,16 @@ async def load_items(table: str, archive: bool, user_id: int, osbb: str = "") ->
         where.append(f"osbb IN ({placeholders})")
         params.extend(allowed)
     sql = f"SELECT {columns} FROM {table} WHERE {' AND '.join(where)} ORDER BY id ASC"
-    return await db_fetch_all(sql, params)
+    rows=await db_fetch_all(sql, params)
+    rows=[r for r in rows if can_read_legacy_item(user_id,r["osbb"],table)]
+    filtered=[]
+    for row in rows:
+        if is_limited_viewer(user_id,row["osbb"]):
+            if table!="acts": continue
+            if not any(k.casefold() in f"{row.get('performer') or ''} {row.get('descr') or ''}".casefold() for k in readonly_keywords(user_id,row["osbb"])): continue
+        filtered.append(row)
+    rows=filtered
+    return rows
 
 
 async def render_items_page(message: types.Message, table: str, archive: bool, user_id: int, page: int = 0, osbb: str = "") -> None:
@@ -661,6 +581,8 @@ async def search_records(section: str, query: str, user_id: int) -> list[dict[st
 
 @dp.message(F.text.in_(["🔎 Пошук актів", "🔎 Пошук чеків", "🔎 Пошук робіт"]))
 async def start_search(m: types.Message, state: FSMContext) -> None:
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
+        return await answer_forbidden(m)
     await state.clear()
     section = section_from_search_text(m.text or "")
     if not section:
@@ -705,7 +627,11 @@ async def send_item_card(chat_id: int, row: dict[str, Any], table: str, user_id:
     markup = None if archive else item_keyboard(int(row["id"]), row["status"], table, user_id, row.get("file_id", ""))
     if table == "acts":
         photo_note = "\n⚠️ Фото ще не додано" if row.get("file_id") == "NO_FILE" else ""
-        caption = f"📄 Акт №{row['title']} ({row['osbb']}){photo_note}\n📝 Опис: {row.get('descr') or '-'}\n⏳ Статус: {row['status']}"
+        amount=f"\n💵 Сума: {row['amount']} грн" if row.get("amount") is not None else ""
+        if row.get("amount") is not None:
+            paid=await _paid_total(int(row["id"]))
+            amount+=f"\n💳 Оплачено: {paid:g} з {float(row['amount']):g} грн"
+        caption = f"📄 Акт №{row['title']} ({row['osbb']}){photo_note}\n👷 Виконавець: {row.get('performer') or '-'}{amount}\n📝 Опис: {row.get('descr') or '-'}\n⏳ Статус: {row['status']}"
         if row.get("file_id") and row["file_id"] != "NO_FILE":
             try:
                 await bot.send_photo(chat_id, row["file_id"], caption=caption, reply_markup=markup)
@@ -737,6 +663,7 @@ async def noop(cb: CallbackQuery) -> None:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message, state: FSMContext) -> None:
     await state.clear()
+    upsert_user(m.from_user)
     if is_readonly_viewer(m.from_user.id):
         await m.answer(
             f"👋 Вітаємо, {readonly_name(m.from_user.id)}.\n"
@@ -744,7 +671,7 @@ async def cmd_start(m: types.Message, state: FSMContext) -> None:
             reply_markup=readonly_menu(),
         )
         return
-    await m.answer("👋 Система готова.", reply_markup=main_menu())
+    await m.answer("👋 Система готова.", reply_markup=main_menu_for_user(m.from_user.id))
 
 
 @dp.message(F.text == "🔄 Оновити статус")
@@ -752,20 +679,24 @@ async def readonly_refresh_status(m: types.Message, state: FSMContext) -> None:
     if not is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
-    keywords = readonly_keywords(m.from_user.id)
-    where = " OR ".join("descr LIKE ?" for _ in keywords)
-    params = [f"%{kw}%" for kw in keywords]
-    rows = await db_fetch_all(
-        f"SELECT number, osbb, status, created_at FROM acts WHERE {where} ORDER BY osbb ASC, id ASC",
-        params,
-    )
+    keywords = [keyword.casefold() for keyword in readonly_keywords(m.from_user.id)]
+    orgs = user_allowed_osbbs(m.from_user.id)
+    if not keywords or not orgs:
+        return await m.answer("Superadmin ще не призначив ОСББ та ключові слова.", reply_markup=readonly_menu())
+    placeholders=",".join("?" for _ in orgs)
+    candidates=await db_fetch_all(f"SELECT number,osbb,status,created_at,descr,performer,file_id,id FROM acts WHERE osbb IN ({placeholders}) ORDER BY osbb,id",orgs)
+    rows=[r for r in candidates if any(k in f"{r.get('performer') or ''} {r.get('descr') or ''}".casefold() for k in keywords)]
     if not rows:
         await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=readonly_menu())
         return
     text = "📄 <b>Актуальний статус ваших актів:</b>\n\n"
     for row in rows:
-        text += f"№{row['number']} ({row['osbb']}) — {row['status']} [{row['created_at']}]\n"
+        text += f"№{row['number']} ({row['osbb']}) — {row['performer'] or '-'} — {row['status']} [{row['created_at']}]\n{row['descr'] or ''}\n"
     await m.answer(text, parse_mode="HTML", reply_markup=readonly_menu())
+    for row in rows:
+        if row.get("file_id") and row["file_id"]!="NO_FILE":
+            try: await bot.send_photo(m.chat.id,row["file_id"],caption=f"Акт №{row['number']} · {row['osbb']}")
+            except Exception: logger.exception("Viewer photo send failed for act %s",row["id"])
 
 
 @dp.message(F.text == "⬅️ Назад")
@@ -774,7 +705,7 @@ async def m_back(m: types.Message, state: FSMContext) -> None:
     if is_readonly_viewer(m.from_user.id):
         await m.answer("Меню:", reply_markup=readonly_menu())
         return
-    await m.answer("Головне меню:", reply_markup=main_menu())
+    await m.answer("Головне меню:", reply_markup=main_menu_for_user(m.from_user.id))
 
 
 @dp.callback_query(F.data == "main_menu_back")
@@ -786,27 +717,24 @@ async def back_to_menu_inline(cb: CallbackQuery, state: FSMContext) -> None:
 
 @dp.message(F.text == "📄 Акти")
 async def m_acts(m: types.Message, state: FSMContext) -> None:
-    if is_readonly_viewer(m.from_user.id):
-        return
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}): return await answer_forbidden(m)
     await state.clear()
-    await m.answer("АКТИ", reply_markup=acts_menu())
+    await m.answer("АКТИ", reply_markup=acts_menu(m.from_user.id))
 
 
 @dp.message(F.text == "🧾 Чеки ОСББ")
 async def m_docs(m: types.Message, state: FSMContext) -> None:
-    if is_readonly_viewer(m.from_user.id):
-        return
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}): return await answer_forbidden(m)
     await state.clear()
-    await m.answer("ЧЕКИ", reply_markup=docs_menu())
+    await m.answer("ЧЕКИ", reply_markup=docs_menu(m.from_user.id))
 
 
 @dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
 async def show_items(m: types.Message, state: FSMContext) -> None:
-    if is_readonly_viewer(m.from_user.id):
-        return
+    table = "acts" if "акт" in (m.text or "").lower() else "docs"
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}): return await answer_forbidden(m)
     await state.clear()
     archive = "Архів" in (m.text or "")
-    table = "acts" if "акт" in (m.text or "").lower() else "docs"
     await render_items_page(m, table, archive, m.from_user.id)
 
 
@@ -826,13 +754,79 @@ async def paginate_items(cb: CallbackQuery, callback_data: PageCb) -> None:
 
 
 @dp.callback_query(ItemCb.filter(F.cmd == "ask"))
-async def ask_item_action(cb: CallbackQuery, callback_data: ItemCb) -> None:
+async def ask_item_action(cb: CallbackQuery, callback_data: ItemCb, state: FSMContext) -> None:
     if callback_data.table not in VALID_TABLES:
         return await cb.answer("Некоректна дія", show_alert=True)
     if not await require_item_access(cb, callback_data.table, callback_data.item_id):
         return
+    row=await get_item(callback_data.table,callback_data.item_id)
+    if not row: return await cb.answer("Запис не знайдено.",show_alert=True)
+    if callback_data.action in {"proc","pay"} and not (can_process_osbb(cb.from_user.id,row["osbb"]) or (is_superadmin(cb.from_user.id))):
+        return await answer_forbidden(cb)
+    if callback_data.action in {"del","fin"} and not can_manage_osbb(cb.from_user.id,row["osbb"]):
+        return await answer_forbidden(cb)
+    if callback_data.table=="acts" and callback_data.action=="pay":
+        await state.clear(); await state.update_data(act_id=callback_data.item_id); await state.set_state(ItemPaymentForm.amount)
+        await cb.message.answer(f"Акт №{row['title']} · сплачено раніше {await _paid_total(callback_data.item_id):g} грн з {row.get('amount') or 'сума не задана'} грн.\nВведіть суму цього платежу:")
+        return await cb.answer()
     await cb.message.edit_reply_markup(reply_markup=confirm_keyboard(callback_data.item_id, callback_data.action, callback_data.table))
     await cb.answer("Ви впевнені?")
+
+
+@dp.message(ItemPaymentForm.amount)
+async def payment_amount(m: types.Message, state: FSMContext) -> None:
+    try:
+        amount=float((m.text or "").strip().replace(",","."))
+        if amount<=0: raise ValueError
+    except ValueError:
+        return await m.answer("Введіть суму платежу в гривнях, більше нуля.")
+    data=await state.get_data(); act_id=int(data.get("act_id") or 0); row=await get_item("acts",act_id)
+    if not row or not can_process_osbb(m.from_user.id,row["osbb"]):
+        await state.clear(); return await m.answer("Немає доступу до цього акту.")
+    total=row.get("amount")
+    already=await _paid_total(act_id)
+    if total is not None and already+amount>float(total)+0.005:
+        return await m.answer(f"Сума перевищує залишок ({max(float(total)-already,0):.2f} грн). Введіть суму не більшу за залишок.")
+    await state.update_data(payment_amount=amount); await state.set_state(ItemPaymentForm.comment)
+    await m.answer("Додайте коментар бухгалтера про платіж (наприклад, реквізити або «часткова оплата»).")
+
+
+@dp.message(ItemPaymentForm.comment)
+async def payment_comment(m: types.Message,state: FSMContext) -> None:
+    data=await state.get_data(); act_id=int(data.get("act_id") or 0); row=await get_item("acts",act_id)
+    if not row or not can_process_osbb(m.from_user.id,row["osbb"]):
+        await state.clear(); return await m.answer("Немає доступу до цього акту.")
+    comment=(m.text or "").strip()
+    if not comment: return await m.answer("Коментар не може бути порожнім.")
+    if len(comment)>1000: return await m.answer("Коментар завеликий, скоротіть до 1000 символів.")
+    amount=float(data["payment_amount"]); now=db_layer.utc_now(); paid_before=await _paid_total(act_id)
+    with db_layer.transaction() as conn:
+        conn.execute("INSERT INTO act_payments(act_id,amount,comment,paid_at,created_by,created_at) VALUES(?,?,?,?,?,?)",(act_id,amount,comment,now,m.from_user.id,now))
+        paid=paid_before+amount; total=row.get("amount")
+        new_status="Акт оплачений" if total is not None and paid+0.005>=float(total) else "В роботі"
+        conn.execute("UPDATE acts SET status=?,updated_at=? WHERE id=?",(new_status,now,act_id))
+        conn.execute("INSERT INTO item_events(item_type,item_id,event_type,old_value,new_value,comment,actor_id,created_at) VALUES('act',?,'payment',?,?,?, ?,?)",(act_id,str(paid_before),str(paid),f"{amount:.2f} грн · {comment}",m.from_user.id,now))
+        conn.execute("INSERT INTO audit_log(user_id,action,entity_type,entity_id,osbb,old_value,new_value,details,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(m.from_user.id,"payment","act",act_id,row["osbb"],str(paid_before),str(paid),f"{amount:.2f} грн · {comment}",now))
+    await state.clear()
+    total_text=f"{paid:.2f} з {float(row['amount']):.2f} грн" if row.get("amount") is not None else f"{paid:.2f} грн записано; загальну суму акта ще не задано Admin"
+    await m.answer(f"Оплату записано: {total_text}. Статус акта: {new_status}.",reply_markup=main_menu_for_user(m.from_user.id))
+
+
+@dp.message(Command("actamount"))
+async def set_legacy_act_amount(m: types.Message) -> None:
+    try:
+        _,rest=(m.text or "").split(maxsplit=1); act_raw,amount_raw=[p.strip() for p in rest.split("|",1)]; act_id=int(act_raw); amount=float(amount_raw.replace(",","."))
+        if amount<=0: raise ValueError
+    except Exception:
+        return await m.answer("Формат: /actamount ID_АКТА | сума_грн")
+    row=await get_item("acts",act_id)
+    if not row or not can_manage_osbb(m.from_user.id,row["osbb"]): return await m.answer("Немає доступу або акт не знайдено.")
+    if row["status"] in FINAL_STATUSES: return await m.answer("Завершений акт змінювати не можна.")
+    paid=await _paid_total(act_id)
+    if paid>amount+0.005: return await m.answer(f"Сума менша за вже записані платежі ({paid:.2f} грн).")
+    await db_execute("UPDATE acts SET amount=?,updated_at=? WHERE id=?",(amount,db_layer.utc_now(),act_id))
+    _record_item_event("act",act_id,"set_amount",str(row.get("amount")),str(amount),m.from_user.id)
+    await m.answer(f"Суму акту №{row['title']} збережено: {amount:.2f} грн.")
 
 
 @dp.callback_query(ItemCb.filter(F.cmd == "no"))
@@ -852,16 +846,37 @@ async def confirm_item_action(cb: CallbackQuery, callback_data: ItemCb) -> None:
     table = callback_data.table
     action = callback_data.action
     user_id = cb.from_user.id
-    ch = is_chairman(user_id)
-
-    if action in {"del", "fin"} and not ch:
+    org= row["osbb"]
+    admin_allowed=can_manage_osbb(user_id,org)
+    accountant_allowed=can_process_osbb(user_id,org)
+    if action in {"del", "fin"} and not admin_allowed:
         return await answer_forbidden(cb)
-    if action in {"proc", "pay"} and ch:
+    if action in {"proc", "pay"} and not accountant_allowed:
         return await answer_forbidden(cb)
-    if table == "acts" and action == "fin" and row.get("file_id") in ("", "NO_FILE", None):
-        return await cb.answer("Перед завершенням акту потрібно додати фото.", show_alert=True)
+    if table=="acts" and action=="pay":
+        return await cb.answer("Запис платежу потрібно почати кнопкою «Записати оплату».",show_alert=True)
+    allowed_transition={
+        ("acts","proc","Не отримано"),
+        ("acts","fin","Акт оплачений"),
+        ("docs","proc","Не отримано"),
+        ("docs","pay","В роботі"),
+        ("docs","fin","Опрацьовано"),
+        ("acts","del","Не отримано"),
+        ("docs","del","Не отримано"),
+    }
+    if (table,action,row["status"]) not in allowed_transition:
+        return await cb.answer("Цей перехід статусу зараз неможливий.",show_alert=True)
+    if action=="del" and row["status"] not in {"Не отримано"}:
+        return await cb.answer("Видаляти можна лише новий, ще не прийнятий запис.",show_alert=True)
+    if table == "acts" and action == "fin":
+        paid=await _paid_total(callback_data.item_id)
+        if row.get("amount") is None or paid+0.005 < float(row["amount"]):
+            return await cb.answer("Акт можна завершити лише після повної оплати. Перевірте суму та платежі.", show_alert=True)
+        if row.get("file_id") in ("", "NO_FILE", None):
+            return await cb.answer("Перед завершенням акту потрібно додати фото.", show_alert=True)
 
     if action == "del":
+        _record_item_event("act" if table=="acts" else "doc",callback_data.item_id,"deleted",row["status"],None,user_id)
         await db_execute(f"DELETE FROM {table} WHERE id=?", (callback_data.item_id,))
         await cb.message.delete()
         return await cb.answer("Видалено")
@@ -877,6 +892,11 @@ async def confirm_item_action(cb: CallbackQuery, callback_data: ItemCb) -> None:
         return await cb.answer("Некоректна дія", show_alert=True)
 
     await db_execute(f"UPDATE {table} SET status=? WHERE id=?", (new_status, callback_data.item_id))
+    if table=="acts":
+        await db_execute("UPDATE acts SET updated_at=?"+(",completed_at=?" if action=="fin" else "")+" WHERE id=?",(today_date(),today_date(),callback_data.item_id) if action=="fin" else (today_date(),callback_data.item_id))
+    else:
+        await db_execute("UPDATE docs SET updated_at=?"+(",completed_at=?" if action=="fin" else "")+" WHERE id=?",(today_date(),today_date(),callback_data.item_id) if action=="fin" else (today_date(),callback_data.item_id))
+    _record_item_event("act" if table=="acts" else "doc",callback_data.item_id,action,row["status"],new_status,user_id)
     if action == "fin":
         await cb.message.delete()
         return await cb.answer("Завершено")
@@ -903,6 +923,10 @@ async def start_attach_photo(cb: CallbackQuery, callback_data: ItemCb, state: FS
     row = await require_item_access(cb, "acts", callback_data.item_id)
     if not row:
         return
+    if not can_manage_osbb(cb.from_user.id,row["osbb"]):
+        return await answer_forbidden(cb)
+    if row["status"] in FINAL_STATUSES:
+        return await cb.answer("Завершений акт більше не змінюється.",show_alert=True)
     await state.clear()
     await state.update_data(act_id=callback_data.item_id, mode="attach_existing")
     await state.set_state(ActAttachPhotoForm.photo)
@@ -922,7 +946,7 @@ async def save_attached_photo(m: types.Message, state: FSMContext) -> None:
         await state.clear()
         return await m.answer("❌ Втрачено прив'язку до акту. Натисніть кнопку фото під потрібним актом ще раз.")
     row = await get_item("acts", act_id)
-    if not row or not can_access_osbb(m.from_user.id, row["osbb"]):
+    if not row or not can_manage_osbb(m.from_user.id, row["osbb"]):
         await state.clear()
         return await m.answer("⛔ Немає доступу або акт не знайдено.")
     file_id = m.photo[-1].file_id
@@ -943,6 +967,7 @@ async def start_act(m: types.Message, state: FSMContext) -> None:
     if not is_chairman(m.from_user.id):
         return await answer_forbidden(m)
     await state.clear()
+    await state.update_data(user_id=m.from_user.id)
     await m.answer("Введіть номер акту:")
     await state.set_state(ActForm.number)
 
@@ -959,12 +984,30 @@ async def act_number(m: types.Message, state: FSMContext) -> None:
 
 @dp.callback_query(OsbbCb.filter(F.flow == "act_create"), ActForm.osbb)
 async def act_osbb(cb: CallbackQuery, callback_data: OsbbCb, state: FSMContext) -> None:
-    if not can_access_osbb(cb.from_user.id, callback_data.osbb):
+    if not can_manage_osbb(cb.from_user.id, callback_data.osbb):
         return await answer_forbidden(cb)
     await state.update_data(osbb=callback_data.osbb)
-    await state.set_state(ActForm.descr)
-    await safe_edit_text(cb.message, "Введіть опис акту:")
+    await state.set_state(ActForm.performer)
+    await safe_edit_text(cb.message, "Введіть виконавця (це поле використовуватиметься для пошуку Viewer):")
     await cb.answer()
+
+
+@dp.message(ActForm.performer)
+async def act_performer(m: types.Message,state: FSMContext) -> None:
+    performer=(m.text or "").strip()
+    if not performer or len(performer)>200: return await m.answer("Вкажіть виконавця (до 200 символів).")
+    await state.update_data(performer=performer); await state.set_state(ActForm.amount)
+    await m.answer("Введіть повну суму акту в гривнях.")
+
+
+@dp.message(ActForm.amount)
+async def act_amount(m: types.Message,state: FSMContext) -> None:
+    try:
+        amount=float((m.text or "").strip().replace(",","."))
+        if amount<=0 or amount>1_000_000_000: raise ValueError
+    except ValueError: return await m.answer("Введіть суму більше нуля, у гривнях.")
+    await state.update_data(amount=amount); await state.set_state(ActForm.descr)
+    await m.answer("Введіть опис акту:")
 
 
 @dp.message(ActForm.descr)
@@ -985,10 +1028,15 @@ async def act_descr(m: types.Message, state: FSMContext) -> None:
 
 async def create_act_from_state(state: FSMContext, file_id: str) -> int:
     data = await state.get_data()
-    return await db_execute(
-        "INSERT INTO acts (number, osbb, descr, file_id, created_at) VALUES (?,?,?,?,?)",
-        (data["number"], data["osbb"], data["descr"], file_id, today_date()),
+    if not data.get("osbb") or not can_manage_osbb(int(data.get("user_id") or 0),data["osbb"]):
+        raise PermissionError("Немає права створювати акти в цій організації або гілка не оплачена.")
+    now=db_layer.utc_now()
+    act_id=await db_execute(
+        "INSERT INTO acts (number, osbb, descr, performer, amount, file_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (data["number"], data["osbb"], data["descr"],data["performer"],data["amount"], file_id, today_date(),now),
     )
+    _record_item_event("act",act_id,"created",None,"Не отримано",int(data.get("user_id") or CHAIRMAN_ID))
+    return act_id
 
 
 @dp.callback_query(F.data == "add_act_photo_now", ActForm.file)
@@ -1017,7 +1065,7 @@ async def act_file(m: types.Message, state: FSMContext) -> None:
     try:
         act_id = await create_act_from_state(state, m.photo[-1].file_id)
         await state.clear()
-        await m.answer("✅ Акт успішно зареєстровано з фото!", reply_markup=acts_menu())
+        await m.answer("✅ Акт успішно зареєстровано з фото!", reply_markup=acts_menu(m.from_user.id))
         row = await get_item("acts", act_id)
         if row:
             await send_item_card(m.chat.id, row, "acts", m.from_user.id)
@@ -1052,7 +1100,7 @@ async def doc_name(m: types.Message, state: FSMContext) -> None:
 
 @dp.callback_query(OsbbCb.filter(F.flow == "doc_create"), DocForm.osbb)
 async def doc_osbb(cb: CallbackQuery, callback_data: OsbbCb, state: FSMContext) -> None:
-    if not can_access_osbb(cb.from_user.id, callback_data.osbb):
+    if not can_manage_osbb(cb.from_user.id, callback_data.osbb):
         return await answer_forbidden(cb)
     await state.update_data(osbb=callback_data.osbb)
     await state.set_state(DocForm.file)
@@ -1067,12 +1115,14 @@ async def doc_file(m: types.Message, state: FSMContext) -> None:
     if document.mime_type != "application/pdf" and not filename.endswith(".pdf"):
         return await m.answer("Будь ласка, завантажте саме PDF-файл.")
     data = await state.get_data()
+    if not can_manage_osbb(m.from_user.id,data.get("osbb", "")):
+        await state.clear(); return await m.answer("Немає права додавати чеки в цій організації.")
     await db_execute(
         "INSERT INTO docs (name, osbb, file_id, created_at) VALUES (?,?,?,?)",
         (data["name"], data["osbb"], document.file_id, today_date()),
     )
     await state.clear()
-    await m.answer("✅ PDF додано", reply_markup=docs_menu())
+    await m.answer("✅ PDF додано", reply_markup=docs_menu(m.from_user.id))
 
 
 @dp.message(DocForm.file)
@@ -1083,14 +1133,42 @@ async def doc_file_wrong(m: types.Message) -> None:
 @dp.message(F.text == "💰 Зарплати")
 async def salary_menu(m: types.Message, state: FSMContext) -> None:
     await state.clear()
-    if not is_chairman(m.from_user.id):
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
         return await answer_forbidden(m)
     await m.answer("Оберіть ОСББ для зарплат:", reply_markup=osbb_keyboard("salary", m.from_user.id))
 
 
+@dp.message(Command("salaryadd"))
+async def salary_template_add(m: types.Message) -> None:
+    try:
+        _,rest=(m.text or "").split(maxsplit=1); osbb,employee,amount_raw=[x.strip() for x in rest.split("|",2)]; amount=float(amount_raw.replace(",","."))
+        if amount<0: raise ValueError
+    except Exception: return await m.answer("Формат: /salaryadd Назва_організації | працівник | сума_грн")
+    if not can_manage_osbb(m.from_user.id,osbb): return await m.answer("Немає доступу до цієї організації.")
+    org=await db_fetch_one("SELECT id FROM organizations WHERE name=?",(osbb,))
+    await db_execute("INSERT INTO salary_templates(organization_id,employee,amount) VALUES(?,?,?) ON CONFLICT(organization_id,employee) DO UPDATE SET amount=excluded.amount,active=1",(org["id"],employee,amount))
+    await m.answer(f"Працівника {employee} та ставку {amount:g} грн додано до списку {osbb}.")
+
+
+@dp.message(Command("salaryseason"))
+async def salary_template_season(m: types.Message) -> None:
+    try:
+        _,rest=(m.text or "").split(maxsplit=1); osbb,employee,terms=[x.strip() for x in rest.split("|",2)]
+        periods={}
+        for item in terms.split(","):
+            months,amount_raw=[x.strip() for x in item.split("=",1)]; start,end=months.split("-",1); amount=float(amount_raw.replace(",",".")); periods[f"{int(start)}-{int(end)}"]=amount
+            if int(start)<1 or int(start)>12 or int(end)<1 or int(end)>12 or amount<0: raise ValueError
+    except Exception: return await m.answer("Формат: /salaryseason Назва_організації | працівник | 4-10=3500,11-3=4500")
+    if not can_manage_osbb(m.from_user.id,osbb): return await m.answer("Немає доступу до цієї організації.")
+    org=await db_fetch_one("SELECT id FROM organizations WHERE name=?",(osbb,))
+    import json
+    await db_execute("INSERT INTO salary_templates(organization_id,employee,amount,seasonal_json) VALUES(?,?,0,?) ON CONFLICT(organization_id,employee) DO UPDATE SET seasonal_json=excluded.seasonal_json,active=1",(org["id"],employee,json.dumps(periods,ensure_ascii=False)))
+    await m.answer(f"Сезонні ставки для {employee} збережено.")
+
+
 @dp.callback_query(OsbbCb.filter(F.flow == "salary"))
 async def view_salaries_options(cb: CallbackQuery, callback_data: OsbbCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_view_salary(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     osbb = callback_data.osbb
     kb = InlineKeyboardMarkup(
@@ -1114,7 +1192,7 @@ async def salary_back(cb: CallbackQuery, state: FSMContext) -> None:
 
 @dp.callback_query(SalaryCb.filter(F.action == "hist"))
 async def view_salary_history(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_view_salary(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     months = await db_fetch_all("SELECT DISTINCT month_year FROM salaries WHERE osbb=? ORDER BY id DESC", (callback_data.osbb,))
     if not months:
@@ -1127,14 +1205,14 @@ async def view_salary_history(cb: CallbackQuery, callback_data: SalaryCb) -> Non
 
 @dp.callback_query(SalaryCb.filter(F.action == "list"))
 async def show_salary_list(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_view_salary(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     osbb = callback_data.osbb
     month_year = callback_data.month_year
     rows = await db_fetch_all("SELECT id, employee, amount, status FROM salaries WHERE osbb=? AND month_year=? ORDER BY id ASC", (osbb, month_year))
     if not rows:
         if month_year == current_month_year():
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Сформувати список", callback_data=SalaryCb(action="gen", osbb=osbb).pack())]])
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="➕ Сформувати список", callback_data=SalaryCb(action="gen", osbb=osbb).pack())]]) if can_manage_osbb(cb.from_user.id,osbb) else None
             await safe_edit_text(cb.message, f"Нарахувань для {osbb} за {month_year} ще немає.", reply_markup=kb)
         else:
             await safe_edit_text(cb.message, "Дані відсутні.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data=SalaryCb(action="hist", osbb=osbb).pack())]]))
@@ -1145,7 +1223,8 @@ async def show_salary_list(cb: CallbackQuery, callback_data: SalaryCb) -> None:
     for row in rows:
         amount = int(row["amount"]) if float(row["amount"]).is_integer() else row["amount"]
         text += f"{row['status']} {row['employee']}: {amount} грн\n"
-        buttons.append([InlineKeyboardButton(text=f"Змінити: {row['employee']}", callback_data=SalaryCb(action="toggle", osbb=osbb, month_year=month_year, salary_id=row["id"]).pack())])
+        if can_manage_osbb(cb.from_user.id,osbb):
+            buttons.append([InlineKeyboardButton(text=f"Змінити: {row['employee']}", callback_data=SalaryCb(action="toggle", osbb=osbb, month_year=month_year, salary_id=row["id"]).pack())])
     back_target = SalaryCb(action="hist", osbb=osbb).pack() if month_year != current_month_year() else OsbbCb(flow="salary", osbb=osbb).pack()
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=back_target)])
     await safe_edit_text(cb.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
@@ -1154,34 +1233,48 @@ async def show_salary_list(cb: CallbackQuery, callback_data: SalaryCb) -> None:
 
 @dp.callback_query(SalaryCb.filter(F.action == "gen"))
 async def gen_salaries(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_manage_osbb(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     osbb = callback_data.osbb
     month_year = current_month_year()
     existing = await db_fetch_one("SELECT count(*) AS count FROM salaries WHERE osbb=? AND month_year=?", (osbb, month_year))
     if existing and int(existing["count"]) == 0:
+        templates=await db_fetch_all("SELECT employee,amount,seasonal_json FROM salary_templates WHERE organization_id=(SELECT id FROM organizations WHERE name=?) AND active=1 ORDER BY employee",(osbb,))
         rows = []
-        for employee, amount in STAFF_CONFIG[osbb].items():
-            rows.append((month_year, employee, get_seasonal_salary() if amount == "seasonal" else amount, osbb))
+        for item in templates:
+            amount=float(item["amount"])
+            if item.get("seasonal_json"):
+                try:
+                    import json
+                    seasonal=json.loads(item["seasonal_json"])
+                    month=int(datetime.now(LOCAL_TZ).month)
+                    for key,value in seasonal.items():
+                        start,end=map(int,key.split("-"))
+                        in_season=(start<=month<=end) if start<=end else (month>=start or month<=end)
+                        if in_season: amount=float(value)
+                except Exception: logger.exception("Invalid seasonal salary for %s",item["employee"])
+            rows.append((month_year,item["employee"],amount,osbb))
+        if not rows:
+            return await cb.answer("Спочатку додайте працівників і ставки командою /salaryadd.",show_alert=True)
         await db_execute_many("INSERT INTO salaries (month_year, employee, amount, osbb) VALUES (?,?,?,?)", rows)
     await show_salary_list(cb, SalaryCb(action="list", osbb=osbb, month_year=month_year))
 
 
 @dp.callback_query(SalaryCb.filter(F.action == "toggle"))
 async def toggle_salary(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_manage_osbb(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     row = await db_fetch_one("SELECT status FROM salaries WHERE id=? AND osbb=?", (callback_data.salary_id, callback_data.osbb))
     if not row:
         return await cb.answer("Запис не знайдено", show_alert=True)
     new_status = "⏳ Очікує" if row["status"] == "✅ Видано" else "✅ Видано"
-    await db_execute("UPDATE salaries SET status=? WHERE id=?", (new_status, callback_data.salary_id))
+    await db_execute("UPDATE salaries SET status=?,paid_at=? WHERE id=?", (new_status,today_date() if new_status=="✅ Видано" else None, callback_data.salary_id))
     await show_salary_list(cb, SalaryCb(action="list", osbb=callback_data.osbb, month_year=callback_data.month_year))
 
 
 @dp.callback_query(SalaryCb.filter(F.action == "rep_years"))
 async def salary_report_years(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_view_salary(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     current_year = datetime.now().year
     start_year = 2026
@@ -1195,7 +1288,7 @@ async def salary_report_years(cb: CallbackQuery, callback_data: SalaryCb) -> Non
 
 @dp.callback_query(SalaryCb.filter(F.action == "rep_gen"))
 async def salary_report_gen(cb: CallbackQuery, callback_data: SalaryCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_view_salary(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     osbb = callback_data.osbb
     year = callback_data.year
@@ -1234,10 +1327,9 @@ async def salary_report_gen(cb: CallbackQuery, callback_data: SalaryCb) -> None:
 
 @dp.message(F.text == "🛠️ План робіт")
 async def jobs_main_menu(m: types.Message, state: FSMContext) -> None:
-    if is_readonly_viewer(m.from_user.id):
-        return
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}): return await answer_forbidden(m)
     await state.clear()
-    await m.answer("🛠️ <b>Керування планом робіт по ОСББ:</b>", reply_markup=jobs_menu(), parse_mode="HTML")
+    await m.answer("🛠️ <b>План робіт:</b>", reply_markup=jobs_menu(m.from_user.id), parse_mode="HTML")
 
 
 @dp.message(F.text == "➕ Добавити роботу")
@@ -1251,7 +1343,7 @@ async def job_add_start(m: types.Message, state: FSMContext) -> None:
 
 @dp.callback_query(OsbbCb.filter(F.flow == "job_add"), JobForm.osbb)
 async def job_add_osbb(cb: CallbackQuery, callback_data: OsbbCb, state: FSMContext) -> None:
-    if not can_access_osbb(cb.from_user.id, callback_data.osbb):
+    if not can_manage_osbb(cb.from_user.id, callback_data.osbb):
         return await answer_forbidden(cb)
     await state.update_data(osbb=callback_data.osbb)
     await safe_edit_text(cb.message, "Оберіть місяць для планування завдання:", reply_markup=months_keyboard("job_add", callback_data.osbb))
@@ -1260,7 +1352,7 @@ async def job_add_osbb(cb: CallbackQuery, callback_data: OsbbCb, state: FSMConte
 
 @dp.callback_query(JobCb.filter(F.action == "month"), JobForm.osbb)
 async def job_add_month(cb: CallbackQuery, callback_data: JobCb, state: FSMContext) -> None:
-    month_year = f"{callback_data.mode}.{datetime.now().year}"
+    month_year = f"{callback_data.mode}.{datetime.now(LOCAL_TZ).year}"
     await state.update_data(month_year=month_year)
     await state.set_state(JobForm.text)
     await safe_edit_text(cb.message, f"Опис завдання для обраного періоду ({month_year}).\n✍️ <b>Введіть текст задачі:</b>", parse_mode="HTML")
@@ -1272,16 +1364,37 @@ async def job_add_save(m: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
     osbb = data.get("osbb")
     month_year = data.get("month_year")
-    if not osbb or not month_year or not can_access_osbb(m.from_user.id, osbb):
+    if not osbb or not month_year or not can_manage_osbb(m.from_user.id, osbb):
         await state.clear()
         return await m.answer("❌ Втрачено дані про період або ОСББ. Спробуйте створити завдання заново.")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    await db_execute(
-        "INSERT INTO jobs (osbb, month_year, task_text, updated_at, created_at) VALUES (?,?,?,?,?)",
-        (osbb, month_year, m.text, now, today_date()),
+    await state.update_data(task_text=(m.text or "").strip())
+    await state.set_state(JobForm.priority)
+    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=x,callback_data=JobCb(action="priority",mode=x).pack())] for x in ["Критична","Висока","Середня","Низька"]])
+    await m.answer("Оберіть важливість роботи:",reply_markup=kb)
+
+
+@dp.callback_query(JobCb.filter(F.action=="priority"),JobForm.priority)
+async def job_priority(cb: CallbackQuery,callback_data: JobCb,state: FSMContext) -> None:
+    if callback_data.mode not in {"Критична","Висока","Середня","Низька"}: return await cb.answer("Некоректний пріоритет.",show_alert=True)
+    await state.update_data(priority=callback_data.mode); await state.set_state(JobForm.deadline)
+    await cb.message.answer("Введіть дедлайн у форматі YYYY-MM-DD або «-», якщо без дедлайну."); await cb.answer()
+
+
+@dp.message(JobForm.deadline)
+async def job_deadline_save(m: types.Message,state: FSMContext) -> None:
+    data=await state.get_data(); osbb=data.get("osbb"); month_year=data.get("month_year"); deadline=(m.text or "").strip()
+    if deadline!="-":
+        try: deadline=date.fromisoformat(deadline).isoformat()
+        except ValueError: return await m.answer("Дедлайн має бути датою YYYY-MM-DD або «-».")
+    if not osbb or not can_manage_osbb(m.from_user.id,osbb): await state.clear(); return await m.answer("Немає права додати роботу.")
+    now = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+    job_id=await db_execute(
+        "INSERT INTO jobs (osbb, month_year, task_text,priority,deadline,updated_at,created_at) VALUES (?,?,?,?,?,?,?)",
+        (osbb, month_year, data.get("task_text"),data.get("priority","Середня"),None if deadline=="-" else deadline,now,today_date()),
     )
+    _record_item_event("job",job_id,"created",None,"Створено",m.from_user.id)
     await state.clear()
-    await m.answer("✅ Задача успішно додана в план робіт!", reply_markup=jobs_menu())
+    await m.answer("✅ Задача успішно додана в план робіт!", reply_markup=jobs_menu(m.from_user.id))
 
 
 @dp.message(F.text == "📋 Поточні роботи")
@@ -1293,7 +1406,7 @@ async def current_jobs_start(m: types.Message) -> None:
 
 @dp.callback_query(OsbbCb.filter(F.flow == "jobs_current"))
 async def show_current_jobs(cb: CallbackQuery, callback_data: OsbbCb) -> None:
-    if not can_access_osbb(cb.from_user.id, callback_data.osbb):
+    if not can_view_jobs(cb.from_user.id, callback_data.osbb):
         return await answer_forbidden(cb)
     await cb.message.delete()
     await render_jobs_page(cb.message, cb.from_user.id, callback_data.osbb, 0)
@@ -1318,7 +1431,8 @@ async def render_jobs_page(message: types.Message, user_id: int, osbb: str, page
 
 def job_card_markup(job_id: int, status: str, user_id: int) -> InlineKeyboardMarkup | None:
     rows = []
-    ch = is_chairman(user_id)
+    job=db_layer.fetch_one("SELECT osbb FROM jobs WHERE id=?",(job_id,)); ch=bool(job and can_manage_osbb(user_id,job["osbb"]))
+    if not ch: return None
     if status == "Створено":
         rows.append([InlineKeyboardButton(text="📥 Прийняти в роботу", callback_data=JobCb(action="act", job_id=job_id, mode="proc").pack())])
         if ch:
@@ -1335,13 +1449,15 @@ def job_card_markup(job_id: int, status: str, user_id: int) -> InlineKeyboardMar
 
 
 async def render_job_text_and_kb(job_id: int, user_id: int) -> tuple[str | None, InlineKeyboardMarkup | None]:
-    row = await db_fetch_one("SELECT osbb, month_year, task_text, status, stages, comments FROM jobs WHERE id=?", (job_id,))
-    if not row or not can_access_osbb(user_id, row["osbb"]):
+    row = await db_fetch_one("SELECT osbb, month_year, task_text, status, stages, comments,priority,deadline FROM jobs WHERE id=?", (job_id,))
+    if not row or not can_view_jobs(user_id, row["osbb"]):
         return None, None
     text = (
         f"🛠️ <b>Завдання ОСББ {row['osbb']} ({row['month_year']})</b>\n"
         f"📝 <b>Задача:</b> {row['task_text']}\n"
         f"📊 <b>Статус:</b> <code>{row['status']}</code>\n"
+        f"⚠️ <b>Важливість:</b> {row.get('priority') or 'Середня'}\n"
+        f"📅 <b>Дедлайн:</b> {row.get('deadline') or '—'}\n"
     )
     if row.get("stages"):
         text += f"\n🧱 <b>Етапи виконання:</b>\n{row['stages']}"
@@ -1357,24 +1473,29 @@ async def handle_job_action(cb: CallbackQuery, callback_data: JobCb, state: FSMC
     row = await db_fetch_one("SELECT osbb, status FROM jobs WHERE id=?", (job_id,))
     if not row:
         return await cb.answer("Задачу не знайдено", show_alert=True)
-    if not can_access_osbb(cb.from_user.id, row["osbb"]):
+    if not can_manage_osbb(cb.from_user.id, row["osbb"]):
         return await answer_forbidden(cb)
-    if mode == "del" and not is_chairman(cb.from_user.id):
-        return await answer_forbidden(cb)
+    if mode=="del" and row["status"]!="Створено": return await cb.answer("Видаляти можна лише нову роботу.",show_alert=True)
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
     if mode == "del":
+        _record_item_event("job",job_id,"deleted",row["status"],None,cb.from_user.id)
         await db_execute("DELETE FROM jobs WHERE id=?", (job_id,))
         await cb.message.delete()
         return await cb.answer("Видалено")
     if mode == "proc":
+        if row["status"]!="Створено": return await cb.answer("Робота вже змінена.",show_alert=True)
         await db_execute("UPDATE jobs SET status='В роботі', updated_at=? WHERE id=?", (now, job_id))
+        _record_item_event("job",job_id,"status",row["status"],"В роботі",cb.from_user.id)
         text, kb = await render_job_text_and_kb(job_id, cb.from_user.id)
         if text:
             await safe_edit_text(cb.message, text, reply_markup=kb, parse_mode="HTML")
         return await cb.answer("Взято в роботу!")
     if mode == "fin":
+        if row["status"]!="В роботі": return await cb.answer("Спершу прийміть роботу в роботу.",show_alert=True)
         await db_execute("UPDATE jobs SET status='Роботу закінчено', updated_at=? WHERE id=?", (now, job_id))
+        await db_execute("UPDATE jobs SET completed_at=? WHERE id=?",(now,job_id))
+        _record_item_event("job",job_id,"status",row["status"],"Роботу закінчено",cb.from_user.id)
         await cb.message.delete()
         return await cb.answer("Роботу закрито!")
     if mode in {"stage", "comm"}:
@@ -1392,18 +1513,20 @@ async def save_job_stage_or_comment(m: types.Message, state: FSMContext) -> None
     job_id = int(data.get("job_id") or 0)
     mode = data.get("mode")
     row = await db_fetch_one("SELECT osbb, stages, comments FROM jobs WHERE id=?", (job_id,))
-    if not row or not mode or not can_access_osbb(m.from_user.id, row["osbb"]):
+    if not row or not mode or not can_manage_osbb(m.from_user.id, row["osbb"]):
         await state.clear()
         return await m.answer("❌ Втрачено зв'язок із карткою завдання. Спробуйте ще раз.")
-    now = datetime.now().strftime("[%d.%m %H:%M]")
+    now = datetime.now(LOCAL_TZ).strftime("[%d.%m %H:%M]")
     if mode == "stage":
         new_value = (row.get("stages") or "") + f"• {now} {m.text}\n"
         await db_execute("UPDATE jobs SET stages=?, updated_at=? WHERE id=?", (new_value, datetime.now().strftime("%Y-%m-%d %H:%M"), job_id))
+        _record_item_event("job",job_id,"stage",row.get("stages"),new_value,m.from_user.id,(m.text or ""))
     else:
         new_value = (row.get("comments") or "") + f"{now}: {m.text}\n"
         await db_execute("UPDATE jobs SET comments=?, updated_at=? WHERE id=?", (new_value, datetime.now().strftime("%Y-%m-%d %H:%M"), job_id))
+        _record_item_event("job",job_id,"comment",row.get("comments"),new_value,m.from_user.id,(m.text or ""))
     await state.clear()
-    await m.answer("✅ Дані оновлено в картці завдання.", reply_markup=jobs_menu())
+    await m.answer("✅ Дані оновлено в картці завдання.", reply_markup=jobs_menu(m.from_user.id))
 
 
 @dp.message(F.text == "✅ Виконані роботи")
@@ -1437,13 +1560,13 @@ async def period_router(cb: CallbackQuery, callback_data: PeriodCb) -> None:
     if callback_data.flow == "jfin":
         await show_finished_jobs_results(cb, callback_data.osbb, callback_data.year, callback_data.period)
     elif callback_data.flow == "zip":
-        if not is_chairman(cb.from_user.id):
+        if not can_report_osbb(cb.from_user.id,callback_data.osbb):
             return await answer_forbidden(cb)
         await cb.answer("📦 Архів формується у фоні...")
         await cb.message.answer("📦 Почав формувати архів. Надішлю файл сюди, коли буде готово.")
         asyncio.create_task(send_filtered_zip(cb.message.chat.id, callback_data.osbb, callback_data.year, callback_data.period))
     elif callback_data.flow == "rep":
-        if not is_chairman(cb.from_user.id):
+        if not can_report_osbb(cb.from_user.id,callback_data.osbb):
             return await answer_forbidden(cb)
         await cb.answer("📈 Звіт формується у фоні...")
         await cb.message.answer("📈 Почав формувати звіт. Надішлю документи сюди, коли буде готово.")
@@ -1474,14 +1597,14 @@ async def show_finished_jobs_results(cb: CallbackQuery, osbb: str, year: str, pe
 @dp.message(F.text == "📦 ZIP Архів")
 async def zip_report_menu(m: types.Message, state: FSMContext) -> None:
     await state.clear()
-    if not is_chairman(m.from_user.id):
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
         return await answer_forbidden(m)
     await m.answer("Оберіть ОСББ для вивантаження ZIP-архіву:", reply_markup=osbb_keyboard("zip", m.from_user.id))
 
 
 @dp.callback_query(OsbbCb.filter(F.flow == "zip"))
 async def zip_years(cb: CallbackQuery, callback_data: OsbbCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_report_osbb(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     await safe_edit_text(cb.message, f"📦 <b>ZIP Архів для {callback_data.osbb}</b>. Оберіть рік:", reply_markup=period_year_keyboard("zip", callback_data.osbb), parse_mode="HTML")
     await cb.answer()
@@ -1489,14 +1612,14 @@ async def zip_years(cb: CallbackQuery, callback_data: OsbbCb) -> None:
 
 @dp.message(F.text == "📊 Прозвітувати")
 async def report_main_menu(m: types.Message) -> None:
-    if not is_chairman(m.from_user.id):
+    if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
         return await answer_forbidden(m)
     await m.answer("📊 <b>Генерація фінансово-господарських звітів.</b>\nОберіть ОСББ:", reply_markup=osbb_keyboard("report", m.from_user.id), parse_mode="HTML")
 
 
 @dp.callback_query(OsbbCb.filter(F.flow == "report"))
 async def report_years(cb: CallbackQuery, callback_data: OsbbCb) -> None:
-    if not is_chairman(cb.from_user.id):
+    if not can_report_osbb(cb.from_user.id,callback_data.osbb):
         return await answer_forbidden(cb)
     await safe_edit_text(cb.message, f"📊 <b>Звітність для {callback_data.osbb}</b>. Оберіть рік:", reply_markup=period_year_keyboard("rep", callback_data.osbb), parse_mode="HTML")
     await cb.answer()
@@ -1516,7 +1639,7 @@ async def send_filtered_zip(chat_id: int, osbb: str, year: str, period: str) -> 
     try:
         date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
         period_title = year if period == "all" else f"{MONTHS_UA[period]}_{year}"
-        acts = await db_fetch_all("SELECT number, file_id FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, date_pattern))
+        acts = await db_fetch_all("SELECT id,number, file_id FROM acts WHERE osbb=? AND status='Завершено!' AND created_at LIKE ?", (osbb, date_pattern))
         docs = await db_fetch_all("SELECT name, file_id FROM docs WHERE osbb=? AND status='Роботу завершено' AND created_at LIKE ?", (osbb, date_pattern))
         if not acts and not docs:
             return await bot.send_message(chat_id, f"❌ За період {period_title} для {osbb} немає закритих документів.")
@@ -1531,7 +1654,8 @@ async def send_filtered_zip(chat_id: int, osbb: str, year: str, period: str) -> 
                 if data is None:
                     missed += 1
                     continue
-                zip_file.writestr(f"Акти/Акт_{row['number']}.jpg", data)
+                safe_number=re.sub(r"[^\w.-]","_",str(row["number"] or "без_номера"))
+                zip_file.writestr(f"Акти/Акт_{row['id']}_{safe_number}.jpg", data)
             for row in docs:
                 data = await download_to_bytes(row["file_id"])
                 if data is None:
@@ -1558,7 +1682,7 @@ async def generate_and_send_report_file(chat_id: int, osbb: str, year: str, peri
     try:
         date_pattern = f"{year}-%" if period == "all" else f"{year}-{period}-%"
         title = report_period_title(year, period)
-        acts = await db_fetch_all("SELECT number, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
+        acts = await db_fetch_all("SELECT id, number, performer, amount, descr, file_id, status, created_at FROM acts WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
         docs = await db_fetch_all("SELECT name, file_id, status, created_at FROM docs WHERE osbb=? AND created_at LIKE ?", (osbb, date_pattern))
         jobs = await db_fetch_all("SELECT task_text, stages, comments, updated_at, month_year FROM jobs WHERE osbb=? AND status='Роботу закінчено' AND created_at LIKE ?", (osbb, date_pattern))
 
@@ -1587,8 +1711,18 @@ def build_report_text(osbb: str, title: str, acts: list[dict[str, Any]], docs: l
     if acts:
         for row in acts:
             lines.append(f"• Акт №{row['number']} від [{row['created_at']}] | Status: {row['status']}")
+            lines.append(f"  Виконавець: {row.get('performer') or '-'} | Сума: {row.get('amount') if row.get('amount') is not None else 'не задана'} грн")
             lines.append(f"  Опис: {row['descr']}")
-            lines.append("  📂 Файл в архіві: Акти/" + f"Акт_{row['number']}.jpg" if row["file_id"] != "NO_FILE" else "  ⚠️ Файл акту відсутній у базі")
+            payments=db_layer.fetch_all("SELECT amount,comment,paid_at,created_by FROM act_payments WHERE act_id=? ORDER BY id",(row["id"],))
+            if payments:
+                lines.append("  Платежі:")
+                for payment in payments: lines.append(f"    {payment['paid_at']} · {payment['amount']:.2f} грн · {payment['comment']} · бухгалтер {payment['created_by']}")
+            history=db_layer.fetch_all("SELECT event_type,old_value,new_value,comment,actor_id,created_at FROM item_events WHERE item_type='act' AND item_id=? ORDER BY id",(row["id"],))
+            if history:
+                lines.append("  Історія змін:")
+                for event in history: lines.append(f"    {event['created_at']} · {event['event_type']} · {event['old_value'] or ''} → {event['new_value'] or ''} · {event['comment'] or ''} · {event['actor_id']}")
+            safe_number=re.sub(r"[^\w.-]","_",str(row["number"] or "без_номера"))
+            lines.append("  📂 Файл в архіві: " + f"Акти/Акт_{row['id']}_{safe_number}.jpg" if row["file_id"] != "NO_FILE" else "  ⚠️ Файл акту відсутній у базі")
             lines.append("")
     else:
         lines.append("Записів за вказаний період немає.\n")
@@ -1617,10 +1751,19 @@ def build_report_text(osbb: str, title: str, acts: list[dict[str, Any]], docs: l
     return "\n".join(lines)
 
 
+register_portal_handlers(dp, bot)
+
+
 async def main() -> None:
     await init_db()
     logger.info("Bot started with DB_PATH=%s", DB_PATH)
-    await dp.start_polling(bot)
+    reminders=asyncio.create_task(resident_period_reminder_worker(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        reminders.cancel()
+        try: await reminders
+        except asyncio.CancelledError: pass
 
 
 if __name__ == "__main__":
