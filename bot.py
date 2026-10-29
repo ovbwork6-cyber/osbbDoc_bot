@@ -10,6 +10,7 @@ from typing import Any, Iterable, Literal
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
@@ -1864,7 +1865,19 @@ async def main() -> None:
     logger.info("Bot started with DB_PATH=%s", DB_PATH)
     reminders=asyncio.create_task(resident_period_reminder_worker(bot))
     try:
-        await dp.start_polling(bot)
+        retry_delay = 5
+        while True:
+            try:
+                await dp.start_polling(bot)
+                break
+            except (TelegramNetworkError, TelegramServerError) as exc:
+                logger.warning(
+                    "Telegram API temporarily unavailable; retrying in %s seconds: %s",
+                    retry_delay,
+                    exc,
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 300)
     finally:
         reminders.cancel()
         try: await reminders
