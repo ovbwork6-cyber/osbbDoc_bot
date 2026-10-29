@@ -343,6 +343,10 @@ def init_db_sync(superadmin_id: int | None = None) -> None:
                 "INSERT INTO users(telegram_id,full_name) VALUES(?,?) ON CONFLICT(telegram_id) DO NOTHING",
                 (int(superadmin_id), "Superadmin"),
             )
+            conn.execute(
+                "UPDATE memberships SET active=0 WHERE telegram_id=? AND role='accountant' AND active=1",
+                (int(superadmin_id),),
+            )
 
 
 async def init_db(superadmin_id: int | None = None) -> None:

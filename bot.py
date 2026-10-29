@@ -274,7 +274,7 @@ def readonly_menu() -> ReplyKeyboardMarkup:
 
 
 def acts_menu(user_id: int) -> ReplyKeyboardMarkup:
-    rows=[[KeyboardButton(text="📋 Поточні акти"), KeyboardButton(text="📂 Архів актів")]]
+    rows=[[KeyboardButton(text="📋 Поточні акти")]]
     if is_chairman(user_id): rows.append([KeyboardButton(text="➕ Створити Акт")])
     rows.append([KeyboardButton(text="🔎 Пошук актів")])
     if is_chairman(user_id): rows.append([KeyboardButton(text="📦 ZIP Архів")])
@@ -286,8 +286,9 @@ def acts_menu(user_id: int) -> ReplyKeyboardMarkup:
 
 
 def docs_menu(user_id: int) -> ReplyKeyboardMarkup:
-    rows=[[KeyboardButton(text="📋 Поточні чеки"), KeyboardButton(text="📂 Архів чеків")],[KeyboardButton(text="🔎 Пошук чеків")]]
+    rows=[[KeyboardButton(text="📋 Поточні чеки")],[KeyboardButton(text="🔎 Пошук чеків")]]
     if is_chairman(user_id): rows.append([KeyboardButton(text="➕ Додати PDF чек")])
+    if is_chairman(user_id): rows.append([KeyboardButton(text="📦 ZIP Архів")])
     rows.append([KeyboardButton(text="⬅️ Назад")])
     return ReplyKeyboardMarkup(
         keyboard=rows,
@@ -579,6 +580,77 @@ async def search_records(section: str, query: str, user_id: int) -> list[dict[st
     return []
 
 
+def parse_act_search_query(query: str) -> list[tuple[str, str]]:
+    """Parse one or two explicit act search criteria, or a free-text term."""
+    aliases = {
+        "осбб": "osbb", "організація": "osbb", "назва осбб": "osbb",
+        "виконавець": "performer", "номер": "number", "номер акту": "number",
+        "номер акта": "number", "акт": "number", "сума": "amount",
+    }
+    parts = [part.strip() for part in query.split(";") if part.strip()]
+    if not parts:
+        raise ValueError("Введіть пошукову ознаку.")
+    if len(parts) > 2:
+        raise ValueError("Можна вказати одну або дві ознаки, розділивши їх крапкою з комою.")
+    criteria: list[tuple[str, str]] = []
+    for part in parts:
+        if "=" not in part and ":" not in part:
+            if len(parts) == 1:
+                return [("any", part)]
+            raise ValueError("Для двох ознак вкажіть назву кожної: ОСББ=...; виконавець=...")
+        separator = "=" if "=" in part else ":"
+        label, value = part.split(separator, 1)
+        field = aliases.get(label.strip().casefold())
+        value = value.strip()
+        if not field or not value:
+            raise ValueError("Поля: ОСББ, виконавець, номер або сума. Наприклад: ОСББ=ВП-16; виконавець=Іванов")
+        criteria.append((field, value))
+    if len({field for field, _ in criteria}) != len(criteria):
+        raise ValueError("Вкажіть дві різні ознаки.")
+    return criteria
+
+
+async def search_acts_by_criteria(query: str, user_id: int) -> list[dict[str, Any]]:
+    allowed = user_allowed_osbbs(user_id)
+    if not allowed:
+        return []
+    criteria = parse_act_search_query(query)
+    where: list[str] = []
+    params: list[Any] = []
+    columns = {
+        "osbb": "osbb",
+        "performer": "performer",
+        "number": "number",
+        "amount": "CAST(amount AS TEXT)",
+    }
+    for field, value in criteria:
+        pattern = f"%{value}%"
+        if field == "any":
+            where.append("(number LIKE ? OR descr LIKE ? OR osbb LIKE ? OR performer LIKE ? OR status LIKE ?)")
+            params.extend([pattern] * 5)
+        elif field == "amount":
+            try:
+                amount = float(value.replace(",", "."))
+            except ValueError as exc:
+                raise ValueError("Суму введіть числом, наприклад сума=1250 або сума=1250,50.") from exc
+            where.append("amount IS NOT NULL AND ABS(amount-?)<0.005")
+            params.append(amount)
+        else:
+            where.append(f"{columns[field]} LIKE ?")
+            params.append(pattern.upper() if field == "osbb" else pattern)
+    if not is_superadmin(user_id):
+        placeholders = ",".join("?" for _ in allowed)
+        where.append(f"osbb IN ({placeholders})")
+        params.extend(allowed)
+    rows = await db_fetch_all(
+        "SELECT id, number AS title, osbb, descr, performer, amount, file_id, status, created_at FROM acts WHERE "
+        + " AND ".join(where)
+        + " ORDER BY id DESC LIMIT 25",
+        params,
+    )
+    return [r for r in rows if can_read_legacy_item(user_id, r["osbb"], "acts")]
+
+
 @dp.message(F.text.in_(["🔎 Пошук актів", "🔎 Пошук чеків", "🔎 Пошук робіт"]))
 async def start_search(m: types.Message, state: FSMContext) -> None:
     if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
@@ -589,6 +661,13 @@ async def start_search(m: types.Message, state: FSMContext) -> None:
         return await m.answer("Не вдалося визначити розділ пошуку.")
     await state.update_data(section=section)
     await state.set_state(SearchForm.query)
+    if section == "acts":
+        return await m.answer(
+            "🔎 Введіть одну ознаку або дві через крапку з комою.\n"
+            "Поля: ОСББ, виконавець, номер, сума.\n"
+            "Приклад: ОСББ=ВП-16; виконавець=Іванов\n"
+            "Можна також ввести один звичайний пошуковий текст."
+        )
     await m.answer(
         f"🔎 Введіть запит для пошуку в {search_title(section)}.\n"
         "Можна шукати за номером/ID, описом, назвою, ОСББ або статусом."
@@ -603,10 +682,12 @@ async def run_search(m: types.Message, state: FSMContext) -> None:
     if not section:
         await state.clear()
         return await m.answer("Пошук скинуто. Оберіть розділ ще раз.")
-    if len(query) < 2:
+    if len(query) < 2 and section != "acts":
         return await m.answer("Введіть мінімум 2 символи для пошуку.")
-
-    rows = await search_records(section, query, m.from_user.id)
+    try:
+        rows = await search_acts_by_criteria(query, m.from_user.id) if section == "acts" else await search_records(section, query, m.from_user.id)
+    except ValueError as exc:
+        return await m.answer(str(exc))
     await state.clear()
     if not rows:
         return await m.answer(f"📭 Нічого не знайдено за запитом: {query}")
@@ -632,13 +713,29 @@ async def send_item_card(chat_id: int, row: dict[str, Any], table: str, user_id:
             paid=await _paid_total(int(row["id"]))
             amount+=f"\n💳 Оплачено: {paid:g} з {float(row['amount']):g} грн"
         caption = f"📄 Акт №{row['title']} ({row['osbb']}){photo_note}\n👷 Виконавець: {row.get('performer') or '-'}{amount}\n📝 Опис: {row.get('descr') or '-'}\n⏳ Статус: {row['status']}"
+        sent_photo = False
         if row.get("file_id") and row["file_id"] != "NO_FILE":
             try:
                 await bot.send_photo(chat_id, row["file_id"], caption=caption, reply_markup=markup)
-                return
+                sent_photo = True
             except Exception:
                 logger.exception("Could not send act photo id=%s", row["id"])
-        await bot.send_message(chat_id, caption, reply_markup=markup)
+        if not sent_photo:
+            await bot.send_message(chat_id, caption, reply_markup=markup)
+        payments = await db_fetch_all(
+            "SELECT amount,comment,paid_at,created_by FROM act_payments WHERE act_id=? ORDER BY id",
+            (int(row["id"]),),
+        )
+        if not payments:
+            await bot.send_message(chat_id, "💳 Платежі: ще не зареєстровані.")
+        else:
+            await bot.send_message(chat_id, "💳 <b>Історія оплат за актом:</b>", parse_mode="HTML")
+            for payment in payments:
+                await bot.send_message(
+                    chat_id,
+                    f"• {payment['paid_at']} · {float(payment['amount']):.2f} грн\n"
+                    f"Коментар: {payment['comment']}\nБухгалтер Telegram ID: {payment['created_by']}",
+                )
     else:
         caption = f"🧾 Чек: {row['title']} ({row['osbb']})\n⏳ Статус: {row['status']}"
         try:
@@ -729,13 +826,12 @@ async def m_docs(m: types.Message, state: FSMContext) -> None:
     await m.answer("ЧЕКИ", reply_markup=docs_menu(m.from_user.id))
 
 
-@dp.message(F.text.in_(["📋 Поточні акти", "📂 Архів актів", "📋 Поточні чеки", "📂 Архів чеків"]))
+@dp.message(F.text.in_(["📋 Поточні акти", "📋 Поточні чеки"]))
 async def show_items(m: types.Message, state: FSMContext) -> None:
     table = "acts" if "акт" in (m.text or "").lower() else "docs"
     if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}): return await answer_forbidden(m)
     await state.clear()
-    archive = "Архів" in (m.text or "")
-    await render_items_page(m, table, archive, m.from_user.id)
+    await render_items_page(m, table, False, m.from_user.id)
 
 
 @dp.callback_query(PageCb.filter())
@@ -1610,7 +1706,7 @@ async def zip_years(cb: CallbackQuery, callback_data: OsbbCb) -> None:
     await cb.answer()
 
 
-@dp.message(F.text == "📊 Прозвітувати")
+@dp.message(F.text.in_(["📊 Прозвітувати", "📈 Звіт по ОСББ"]))
 async def report_main_menu(m: types.Message) -> None:
     if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","accountant","fop"}):
         return await answer_forbidden(m)
