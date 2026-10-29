@@ -203,7 +203,8 @@ def is_chairman(user_id: int) -> bool:
 
 
 def is_readonly_viewer(user_id: int) -> bool:
-    return _is_readonly_viewer(user_id)
+    roles=roles_for(user_id)
+    return "viewer" in roles and not bool(roles & {"admin","accountant","fop","leadership","user"})
 
 
 def readonly_keywords(user_id: int, organization: str | None = None) -> list[str]:
@@ -773,7 +774,7 @@ async def cmd_start(m: types.Message, state: FSMContext) -> None:
 
 @dp.message(F.text == "🔄 Оновити статус")
 async def readonly_refresh_status(m: types.Message, state: FSMContext) -> None:
-    if not is_readonly_viewer(m.from_user.id):
+    if not _is_readonly_viewer(m.from_user.id):
         return
     await state.clear()
     keywords = [keyword.casefold() for keyword in readonly_keywords(m.from_user.id)]
@@ -786,10 +787,18 @@ async def readonly_refresh_status(m: types.Message, state: FSMContext) -> None:
     if not rows:
         await m.answer("📭 Актів з вашим описом наразі не знайдено.", reply_markup=readonly_menu())
         return
-    text = "📄 <b>Актуальний статус ваших актів:</b>\n\n"
+    by_status: dict[str,int] = {}
+    by_org: dict[str,int] = {}
     for row in rows:
-        text += f"№{row['number']} ({row['osbb']}) — {row['performer'] or '-'} — {row['status']} [{row['created_at']}]\n{row['descr'] or ''}\n"
+        by_status[row["status"]]=by_status.get(row["status"],0)+1
+        by_org[row["osbb"]]=by_org.get(row["osbb"],0)+1
+    text = f"📊 <b>Ваші акти: {len(rows)}</b>\n"
+    text += "\n<b>За статусом:</b>\n"+"\n".join(f"• {status}: {count}" for status,count in sorted(by_status.items()))
+    text += "\n\n<b>За організацією:</b>\n"+"\n".join(f"• {org}: {count}" for org,count in sorted(by_org.items()))
     await m.answer(text, parse_mode="HTML", reply_markup=readonly_menu())
+    for row in rows:
+        detail=(row.get("descr") or "")[:2500]
+        await m.answer(f"Акт №{row['number']} ({row['osbb']}) — {row['performer'] or '-'} — {row['status']} [{row['created_at']}]\n{detail}")
     for row in rows:
         if row.get("file_id") and row["file_id"]!="NO_FILE":
             try: await bot.send_photo(m.chat.id,row["file_id"],caption=f"Акт №{row['number']} · {row['osbb']}")

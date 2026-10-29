@@ -238,6 +238,13 @@ def init_db_sync(superadmin_id: int | None = None) -> None:
                 created_by INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS portal_document_access (
+                document_id INTEGER NOT NULL REFERENCES portal_documents(id) ON DELETE CASCADE,
+                telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                granted_by INTEGER NOT NULL,
+                granted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(document_id,telegram_id)
+            );
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_id INTEGER NOT NULL REFERENCES organizations(id),
@@ -328,6 +335,7 @@ def init_db_sync(superadmin_id: int | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_apartments_org ON apartments(organization_id,active,number);
             CREATE INDEX IF NOT EXISTS idx_readings_org_period ON readings(period,status);
             CREATE INDEX IF NOT EXISTS idx_portal_docs_org ON portal_documents(organization_id,published);
+            CREATE INDEX IF NOT EXISTS idx_portal_doc_access_user ON portal_document_access(telegram_id,document_id);
             CREATE INDEX IF NOT EXISTS idx_act_payments_act ON act_payments(act_id,paid_at);
             CREATE INDEX IF NOT EXISTS idx_events_item ON item_events(item_type,item_id,created_at);
             CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
