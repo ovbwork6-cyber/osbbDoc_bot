@@ -253,19 +253,19 @@ def _is_manager(user_id: int, org: str) -> bool:
 
 
 def _is_admin(user_id: int, org: str) -> bool:
-    return can_access_osbb(user_id, org) and (is_superadmin(user_id) or "admin" in roles_for(user_id, org)) and can_manage_osbb(user_id, org)
+    return can_access_osbb(user_id, org) and "admin" in roles_for(user_id, org) and can_manage_osbb(user_id, org)
 
 
 def _can_export(user_id: int, org: str) -> bool:
-    return can_access_osbb(user_id, org) and (is_superadmin(user_id) or bool(roles_for(user_id, org) & {"admin", "fop", "accountant"}))
+    return can_access_osbb(user_id, org) and bool(roles_for(user_id, org) & {"admin", "fop", "accountant"})
 
 
 def _can_export_keys(user_id: int, org: str) -> bool:
-    return can_access_osbb(user_id, org) and (is_superadmin(user_id) or bool(roles_for(user_id, org) & {"admin", "accountant"}))
+    return can_access_osbb(user_id, org) and bool(roles_for(user_id, org) & {"admin", "accountant"})
 
 
 def _can_export_indicators(user_id: int, org: str) -> bool:
-    return can_access_osbb(user_id, org) and (is_superadmin(user_id) or bool(roles_for(user_id, org) & {"admin", "accountant"}))
+    return can_access_osbb(user_id, org) and bool(roles_for(user_id, org) & {"admin", "accountant"})
 
 
 def _can_read_portal(user_id: int, org: str) -> bool:
@@ -318,7 +318,7 @@ def _user_roles(user_id: int) -> set[str]:
 def _main_menu(user_id: int) -> ReplyKeyboardMarkup:
     roles = _user_roles(user_id)
     if is_superadmin(user_id):
-        return _reply([["📊 Dashboard", "📄 Акти"], ["🧾 Чеки ОСББ", "📈 Звіт по ОСББ"], ["🛠️ План робіт", "💰 Зарплати"], ["📁 Документи", "🏘️ Організації"], ["👥 Мешканці та будинок", "📥 Показники"], ["🔑 Ключі квартир", "📇 Контакти"], ["📩 Мої документи"], ["📝 Шаблони документів", "ℹ️ Інфо", "/admin"]])
+        return _reply([["🌿 Гілки й оплата"], ["📋 Призначені ролі"], ["ℹ️ Інфо"]])
     if roles & {"admin", "fop"}:
         rows=[["📊 Dashboard", "📄 Акти"], ["🧾 Чеки ОСББ", "📈 Звіт по ОСББ"], ["🛠️ План робіт", "💰 Зарплати"], ["📁 Документи", "🏘️ Мешканці та будинок"], ["📥 Показники", "🔑 Ключі квартир"], ["📇 Контакти", "📝 Шаблони документів"], ["ℹ️ Інфо"]]
         if "viewer" in roles: rows.append(["🔄 Оновити статус"])
@@ -352,7 +352,7 @@ def upsert_user(user: types.User) -> None:
 
 def _org_keyboard(user_id: int, prefix: str, roles: set[str] | None = None) -> InlineKeyboardMarkup:
     if is_superadmin(user_id):
-        rows = db.fetch_all("SELECT id,name FROM organizations WHERE active=1 ORDER BY name")
+        rows = []
     else:
         sql = "SELECT DISTINCT o.id,o.name FROM organizations o JOIN memberships m ON m.organization_id=o.id JOIN branches b ON b.id=o.branch_id WHERE m.telegram_id=? AND m.active=1 AND o.active=1 AND b.status='active'"
         params: list[Any] = [user_id]
@@ -389,7 +389,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
         await state.clear()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🌿 Гілки й оплата", callback_data="p:sa:branches")],
-            [InlineKeyboardButton(text="🧾 Журнал аудиту", callback_data="p:sa:audit")],
+            [InlineKeyboardButton(text="📋 Переглянути призначені ролі", callback_data="p:sa:users")],
             [InlineKeyboardButton(text="⬅️ Робоче меню", callback_data="p:home")],
         ])
         await m.answer("Керування системою", reply_markup=kb)
@@ -409,9 +409,17 @@ def register_handlers(dp: Any, bot: Any) -> None:
         await m.answer("Модуль шаблонів документів готується.")
 
     @dp.message(F.text == "🏘️ Організації")
+    @dp.message(F.text == "🌿 Гілки й оплата")
+    @dp.message(F.text == "📋 Призначені ролі")
     async def organizations_shortcut(m: types.Message) -> None:
         if not is_superadmin(m.from_user.id):
             return await m.answer("Керування організаціями доступне Superadmin через /admin.")
+        if m.text == "📋 Призначені ролі":
+            branches=db.fetch_all("SELECT id,name FROM branches ORDER BY name")
+            rows=[[InlineKeyboardButton(text=f"🌿 {b['name']} · організації та ролі",callback_data=f"p:sarolebranch:{b['id']}")] for b in branches]
+            rows.append([InlineKeyboardButton(text="📋 Усі призначені ролі",callback_data="p:sarolesall")])
+            rows.append([InlineKeyboardButton(text="⬅️ До меню",callback_data="p:home")])
+            return await m.answer("Адміністративні призначення ролей:",reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         branches=db.fetch_all("SELECT id,name,status,payment_status FROM branches ORDER BY name")
         rows=[[InlineKeyboardButton(text=f"🌿 {b['name']} · {b['status']} · {b['payment_status']}",callback_data=f"p:sabranch:{b['id']}")] for b in branches]
         rows.append([InlineKeyboardButton(text="➕ Додати гілку",callback_data="p:sacreatebranch")])
@@ -672,9 +680,8 @@ def register_handlers(dp: Any, bot: Any) -> None:
     @dp.message(F.text == "📊 Dashboard")
     async def dashboard(m: types.Message) -> None:
         if is_superadmin(m.from_user.id):
-            orgs = db.fetch_all("SELECT o.id,o.name,b.payment_status,b.status branch_status FROM organizations o JOIN branches b ON b.id=o.branch_id WHERE o.active=1 ORDER BY o.name")
-        else:
-            orgs = db.fetch_all("SELECT DISTINCT o.id,o.name,b.payment_status,b.status branch_status FROM organizations o JOIN branches b ON b.id=o.branch_id JOIN memberships mm ON mm.organization_id=o.id WHERE mm.telegram_id=? AND mm.active=1 AND o.active=1 AND b.status='active' ORDER BY o.name", (m.from_user.id,))
+            return await m.answer("Superadmin керує гілками, адміністративними ролями та оплатою. Внутрішній Dashboard доступний Admin організації.")
+        orgs = db.fetch_all("SELECT DISTINCT o.id,o.name,b.payment_status,b.status branch_status FROM organizations o JOIN branches b ON b.id=o.branch_id JOIN memberships mm ON mm.organization_id=o.id WHERE mm.telegram_id=? AND mm.active=1 AND o.active=1 AND b.status='active' ORDER BY o.name", (m.from_user.id,))
         if not orgs:
             return await m.answer("Немає доступних організацій.")
         lines = ["📊 Dashboard"]
@@ -820,7 +827,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
 
     @dp.callback_query(F.data.startswith("p:docaccessgrant:"))
     async def document_access_grant(cb: types.CallbackQuery) -> None:
-        if not is_superadmin(cb.from_user.id) and not (roles_for(cb.from_user.id) & {"admin","fop"}): return await cb.answer("Немає доступу.",show_alert=True)
+        if not (roles_for(cb.from_user.id) & {"admin","fop"}): return await cb.answer("Немає доступу.",show_alert=True)
         try: _,_,doc_raw,user_raw=cb.data.split(":",3); doc_id=int(doc_raw); user_id=int(user_raw)
         except ValueError: return await cb.answer("Некоректні дані.",show_alert=True)
         row=db.fetch_one("SELECT d.name,o.name org FROM portal_documents d JOIN organizations o ON o.id=d.organization_id WHERE d.id=?",(doc_id,))
@@ -841,7 +848,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
 
     @dp.message(PortalForm.document_access_user)
     async def document_access_manual_save(m: types.Message,state: FSMContext) -> None:
-        if not is_superadmin(m.from_user.id) and not (roles_for(m.from_user.id) & {"admin","fop"}): await state.clear(); return await m.answer("Немає доступу.")
+        if not (roles_for(m.from_user.id) & {"admin","fop"}): await state.clear(); return await m.answer("Немає доступу.")
         data=await state.get_data(); doc_id=int(data.get("document_access_id") or 0)
         try: user_id=int((m.text or "").strip())
         except ValueError: return await m.answer("Введіть числовий Telegram ID.")
@@ -956,9 +963,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
             rows.append([InlineKeyboardButton(text="⬅️ До керування",callback_data="p:home")])
             await cb.message.answer("Ролі користувачів. Оберіть гілку, щоб переглянути її організації та призначити бухгалтера лише в потрібних організаціях.",reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         elif action=="audit":
-            rows=db.fetch_all("SELECT user_id,action,entity_type,entity_id,osbb,details,created_at FROM audit_log ORDER BY id DESC LIMIT 30")
-            text="🧾 Останні записи аудиту:\n"+("\n".join(f"{r['created_at']} · {r['user_id']} · {r['action']} · {r['osbb'] or r['entity_type']} · {r['details'] or ''}" for r in rows) if rows else "Журнал порожній.")
-            await cb.message.answer(text)
+            return await cb.answer("Журнал містить внутрішні дані організацій і доступний лише їхнім Admin.",show_alert=True)
         await cb.answer()
 
     @dp.callback_query(F.data.startswith("p:sabranch:"))
@@ -994,7 +999,8 @@ def register_handlers(dp: Any, bot: Any) -> None:
         rows=db.fetch_all("""SELECT b.name branch,o.name org,u.full_name,u.username,m.telegram_id,m.role,m.keywords
             FROM memberships m JOIN organizations o ON o.id=m.organization_id
             JOIN branches b ON b.id=o.branch_id LEFT JOIN users u ON u.telegram_id=m.telegram_id
-            WHERE m.active=1 ORDER BY b.name,o.name,m.role,u.full_name""")
+            WHERE m.active=1 AND m.role IN ('admin','accountant','viewer','fop')
+            ORDER BY b.name,o.name,m.role,u.full_name""")
         if not rows:
             await cb.message.answer("Активних призначень ролей поки немає.")
         else:
@@ -1017,7 +1023,8 @@ def register_handlers(dp: Any, bot: Any) -> None:
         org_id=int(cb.data.rsplit(":",1)[1]); org=db.fetch_one("SELECT o.name,b.name branch FROM organizations o JOIN branches b ON b.id=o.branch_id WHERE o.id=?",(org_id,))
         if not org: return await cb.answer("Організацію не знайдено.",show_alert=True)
         roles=db.fetch_all("""SELECT u.full_name,u.username,m.telegram_id,m.role,m.keywords FROM memberships m
-            LEFT JOIN users u ON u.telegram_id=m.telegram_id WHERE m.organization_id=? AND m.active=1 ORDER BY m.role,u.full_name""",(org_id,))
+            LEFT JOIN users u ON u.telegram_id=m.telegram_id WHERE m.organization_id=? AND m.active=1
+            AND m.role IN ('admin','accountant','viewer','fop') ORDER BY m.role,u.full_name""",(org_id,))
         lines=[f"👥 Ролі в {org['name']} · гілка {org['branch']}"]
         if roles:
             for r in roles:
@@ -1044,7 +1051,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
         org_id=int(cb.data.rsplit(":",1)[1])
         if not db.fetch_one("SELECT 1 FROM organizations WHERE id=?",(org_id,)):
             return await cb.answer("Організацію не знайдено.",show_alert=True)
-        roles=[("admin","Admin / Голова"),("accountant","Accountant / Бухгалтер"),("viewer","Viewer"),("fop","FOP"),("leadership","Leadership"),("user","Мешканець")]
+        roles=[("admin","Admin / Голова"),("accountant","Accountant / Бухгалтер"),("viewer","Viewer"),("fop","FOP")]
         kb=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=label,callback_data=f"p:saroleassign:{org_id}:{role}")]
             for role,label in roles
@@ -1054,7 +1061,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
 
     async def begin_role_assignment(cb: types.CallbackQuery,state: FSMContext,org_id: int,role: str) -> None:
         if not is_superadmin(cb.from_user.id): return await cb.answer("Немає доступу.",show_alert=True)
-        if role not in {"admin","accountant","viewer","fop","leadership","user"}:
+        if role not in {"admin","accountant","viewer","fop"}:
             return await cb.answer("Некоректна роль.",show_alert=True)
         await state.clear()
         org=db.fetch_one("SELECT name FROM organizations WHERE id=?",(org_id,))
@@ -1138,6 +1145,8 @@ def register_handlers(dp: Any, bot: Any) -> None:
         if not is_superadmin(cb.from_user.id): return await cb.answer("Немає доступу.",show_alert=True)
         try: _,_,org_raw,user_raw,role=cb.data.split(":",4); org_id=int(org_raw); user_id=int(user_raw)
         except ValueError: return await cb.answer("Некоректні дані ролі.",show_alert=True)
+        if role not in {"admin","accountant","viewer","fop"}:
+            return await cb.answer("Superadmin може керувати лише адміністративними ролями.",show_alert=True)
         org=db.fetch_one("SELECT name FROM organizations WHERE id=?",(org_id,))
         if not org: return await cb.answer("Організацію не знайдено.",show_alert=True)
         db.execute("UPDATE memberships SET active=0 WHERE telegram_id=? AND organization_id=? AND role=?",(user_id,org_id,role))
@@ -1261,24 +1270,16 @@ def register_handlers(dp: Any, bot: Any) -> None:
     @dp.callback_query(F.data.startswith("p:saorg:"))
     async def org_admin_view(cb: types.CallbackQuery) -> None:
         if not is_superadmin(cb.from_user.id): return await cb.answer("Немає доступу.",show_alert=True)
-        org_id=int(cb.data.rsplit(":",1)[1]); org=_org(org_id)
-        if not org: return await cb.answer("Організацію не знайдено.",show_alert=True)
-        kb=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Коди доступу",callback_data=f"p:codes:{org_id}")],
-            [InlineKeyboardButton(text="Відкрити налаштування будинку",callback_data=f"p:building:{org_id}")],
-            [InlineKeyboardButton(text="Користувачі та ролі",callback_data=f"p:saroleorg:{org_id}")],
-            [InlineKeyboardButton(text="⬅️ До організацій",callback_data="p:sa:orgs")],
-        ])
-        await cb.message.answer(f"{org['name']} · {org['kind']} · гілка {org['branch_id']}",reply_markup=kb); await cb.answer()
+        await cb.answer("Налаштування та внутрішні дані організації доступні її Admin.",show_alert=True)
 
     @dp.message(Command("role"))
     async def grant_role(m: types.Message) -> None:
         if not is_superadmin(m.from_user.id): return await m.answer("Команда доступна лише Superadmin.")
         parts=(m.text or "").split(maxsplit=1)
-        if len(parts)<2: return await m.answer("Формат: /role ID | Назва організації | admin/accountant/viewer/leadership/fop/user | keywords")
+        if len(parts)<2: return await m.answer("Формат: /role ID | Назва організації | admin/accountant/viewer/fop | keywords")
         try:
             uid_raw,name,role,*rest=[p.strip() for p in parts[1].split("|")]; uid=int(uid_raw); org=_org_by_name(name)
-            if not org or role not in {"admin","accountant","viewer","leadership","fop","user"}: raise ValueError
+            if not org or role not in {"admin","accountant","viewer","fop"}: raise ValueError
         except Exception: return await m.answer("Перевірте ID, назву організації та роль.")
         if uid==SUPERADMIN_ID and role=="accountant": return await m.answer("Superadmin має повний доступ і не отримує роль бухгалтера.")
         keywords=rest[0] if rest else ""
@@ -1293,7 +1294,7 @@ def register_handlers(dp: Any, bot: Any) -> None:
         if not is_superadmin(m.from_user.id): return await m.answer("Команда доступна лише Superadmin.")
         try:
             parts=(m.text or "").split(maxsplit=1); uid_raw,name,role=[p.strip() for p in parts[1].split("|")]; org=_org_by_name(name); uid=int(uid_raw)
-            if not org: raise ValueError
+            if not org or role not in {"admin","accountant","viewer","fop"}: raise ValueError
         except Exception: return await m.answer("Формат: /roleoff ID | Назва організації | роль")
         db.execute("UPDATE memberships SET active=0 WHERE telegram_id=? AND organization_id=? AND role=?",(uid,org["id"],role))
         _audit(m.from_user.id,"revoke_role","membership",None,name,f"{uid} {role}")

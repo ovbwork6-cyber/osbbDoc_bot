@@ -14,7 +14,7 @@ SUPERADMIN_ID = int(os.getenv("SUPERADMIN_ID") or os.getenv("CHAIRMAN_ID") or "0
 
 def roles_for(telegram_id: int, organization: str | None = None) -> set[str]:
     if int(telegram_id) == SUPERADMIN_ID and SUPERADMIN_ID:
-        return {"superadmin", "admin"}
+        return {"superadmin"}
     sql = "SELECT m.role FROM memberships m JOIN organizations o ON o.id=m.organization_id JOIN branches b ON b.id=o.branch_id WHERE m.telegram_id=? AND m.active=1 AND o.active=1 AND b.status='active'"
     params: list[Any] = [int(telegram_id)]
     if organization:
@@ -25,7 +25,7 @@ def roles_for(telegram_id: int, organization: str | None = None) -> set[str]:
 
 def memberships_for(telegram_id: int) -> list[dict[str, Any]]:
     if int(telegram_id) == SUPERADMIN_ID and SUPERADMIN_ID:
-        return db_layer.fetch_all("SELECT id,name,kind,branch_id FROM organizations WHERE active=1 ORDER BY name")
+        return []
     return db_layer.fetch_all(
         """SELECT DISTINCT o.id,o.name,o.kind,o.branch_id FROM organizations o
            JOIN memberships m ON m.organization_id=o.id
@@ -60,8 +60,8 @@ def can_access_osbb(telegram_id: int, organization: str) -> bool:
     row = organization_state(organization)
     if not row:
         return False
-    if int(telegram_id) == SUPERADMIN_ID and SUPERADMIN_ID:
-        return True
+    if is_superadmin(telegram_id):
+        return False
     return bool(row["active"] and row["branch_status"] == "active" and roles_for(telegram_id, organization))
 
 
@@ -69,8 +69,8 @@ def can_manage_osbb(telegram_id: int, organization: str) -> bool:
     row = organization_state(organization)
     if not row:
         return False
-    if int(telegram_id) == SUPERADMIN_ID and SUPERADMIN_ID:
-        return True
+    if is_superadmin(telegram_id):
+        return False
     if not row["active"] or row["branch_status"] != "active": return False
     if not _paid_for_writes(row):
         return False
@@ -81,7 +81,7 @@ def can_process_osbb(telegram_id: int, organization: str) -> bool:
     row = organization_state(organization)
     if not row:
         return False
-    if int(telegram_id) == SUPERADMIN_ID and SUPERADMIN_ID: return True
+    if is_superadmin(telegram_id): return False
     if not row["active"] or row["branch_status"] != "active": return False
     if not _paid_for_writes(row):
         return False
@@ -97,11 +97,13 @@ def is_superadmin(telegram_id: int) -> bool:
 
 
 def is_chairman(telegram_id: int) -> bool:
-    """Compatibility name used by legacy handlers: Admin/FOP or Superadmin."""
-    return is_superadmin(telegram_id) or bool(roles_for(telegram_id) & {"admin", "fop"})
+    """Whether the user has an organization-level Admin or FOP role."""
+    return not is_superadmin(telegram_id) and bool(roles_for(telegram_id) & {"admin", "fop"})
 
 
 def is_readonly_viewer(telegram_id: int) -> bool:
+    if is_superadmin(telegram_id):
+        return False
     return bool(db_layer.fetch_one("SELECT 1 FROM memberships WHERE telegram_id=? AND role='viewer' AND active=1 LIMIT 1", (int(telegram_id),)))
 
 
@@ -122,5 +124,5 @@ def readonly_name(telegram_id: int) -> str:
 
 def user_allowed_osbbs(telegram_id: int) -> list[str]:
     if is_superadmin(telegram_id):
-        return [r["name"] for r in db_layer.fetch_all("SELECT name FROM organizations WHERE active=1 ORDER BY name")]
+        return []
     return [r["name"] for r in memberships_for(telegram_id)]
