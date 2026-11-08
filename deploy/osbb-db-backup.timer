@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily OSBB bot database backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

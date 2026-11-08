@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    command: python bot.py
+    container_name: osbb-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Europe/Kyiv
+
+  web:
+    build: .
+    command: uvicorn web_app:app --host 0.0.0.0 --port 8000
+    container_name: osbb-web
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Europe/Kyiv
