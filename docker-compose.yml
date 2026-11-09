@@ -12,6 +12,7 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Europe/Kyiv
+      - OSBB_DB_PATH=/app/data/osbb_acts.db
 
   web:
     build: .
@@ -26,3 +27,4 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Europe/Kyiv
+      - OSBB_DB_PATH=/app/data/osbb_acts.db
