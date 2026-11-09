@@ -4,99 +4,74 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Управління будинками ОСББ (Вараш)</title>
-    
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Google Fonts: Nunito -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-    
-    <!-- Phosphor Icons -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
-
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Nunito', 'sans-serif'],
-                    },
-                }
-            }
-        }
-    </script>
+    <style>body { font-family: 'Nunito', sans-serif; }</style>
 </head>
-<body class="bg-[#faf9f6] font-sans text-stone-700 antialiased min-h-screen flex flex-col">
+<body class="bg-[#faf9f6] text-stone-700 antialiased min-h-screen flex flex-col">
 
-    <!-- Header / Navigation -->
-    <header class="bg-[#dce8d6] text-stone-700 shadow-sm sticky top-0 z-50">
+    <header class="bg-[#dce8d6] shadow-sm sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-            <!-- Logo area -->
             <div class="flex items-center gap-3">
-                <div class="bg-white/50 p-2.5 rounded-2xl backdrop-blur-sm">
-                    <i class="ph-duotone ph-house-line text-2xl leading-none"></i>
+                <div class="bg-white/50 p-2.5 rounded-2xl">
+                    <i class="ph-duotone ph-house-line text-2xl"></i>
                 </div>
-                <h1 class="text-xl sm:text-2xl font-bold tracking-wide">
-                    Управління будинками ОСББ (Вараш)
-                </h1>
-            </div>
-            
-            <!-- User / Welcome area -->
-            <div class="hidden sm:flex items-center gap-2 bg-white/50 px-4 py-2 rounded-full backdrop-blur-sm">
-                <i class="ph-duotone ph-hand-waving text-xl"></i>
-                <span class="text-sm font-semibold tracking-wide">Вітаємо вдома, В.П.!</span>
+                <h1 class="text-xl sm:text-2xl font-bold">Управління будинками ОСББ (Вараш)</h1>
             </div>
         </div>
     </header>
 
-    <!-- Main Content -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full flex-grow">
-        
-        <!-- Dashboard Grid -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             
-            <!-- Card 1: Мої ОСББ / ОК -->
-            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
+            <!-- Мої ОСББ (Тепер з кнопками генерації!) -->
+            <div class="bg-white rounded-3xl shadow-sm p-8 flex flex-col h-full border border-stone-100 lg:col-span-2">
                 <div class="flex items-center gap-4 mb-6">
                     <div class="bg-[#f2efe9] p-3 rounded-2xl text-[#aa9d83]">
-                        <i class="ph-duotone ph-buildings text-2xl leading-none"></i>
+                        <i class="ph-duotone ph-buildings text-2xl"></i>
                     </div>
-                    <h3 class="font-bold text-stone-700 text-xl">Мої ОСББ / ОК</h3>
+                    <h3 class="font-bold text-xl">Мої ОСББ / ОК</h3>
                 </div>
                 
                 <div class="flex-1 flex flex-col">
                     {% if organizations %}
-                        <ul class="flex flex-col gap-3">
+                        <ul class="flex flex-col gap-4">
                             {% for org in organizations %}
-                                <li class="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-100">
-                                    <span class="font-bold text-stone-700">{{ org.name }} <span class="font-normal text-sm text-stone-400 ml-1">(Квартир: {{ org.apartment_count }})</span></span>
-                                    <span class="bg-[#c7e3d6] text-[#2c5240] px-3 py-1 rounded-full text-xs font-bold">Активно</span>
+                                <li class="flex flex-col sm:flex-row sm:items-center justify-between p-5 bg-stone-50 rounded-2xl border border-stone-100 gap-4">
+                                    <div>
+                                        <span class="font-bold text-lg text-stone-700">{{ org.name }}</span>
+                                        <span class="font-normal text-sm text-stone-400 block sm:inline sm:ml-2">(Квартир: {{ org.apartment_count }})</span>
+                                    </div>
+                                    
+                                    <!-- Динамічні кнопки генерації документів для КОЖНОГО ОСББ -->
+                                    <div class="flex flex-wrap gap-2">
+                                        <a target="_blank" href="/generate/appeal/{{ org.id }}" class="inline-flex items-center gap-1.5 bg-white hover:bg-stone-100 border border-stone-200 px-3 py-2 rounded-xl text-sm font-bold shadow-sm transition-all">
+                                            <i class="ph-bold ph-paper-plane-tilt text-[#2c5240]"></i> Звернення
+                                        </a>
+                                        <!-- Для акта тимчасово хардкодимо ФОП ID=2, а ОСББ беремо динамічно -->
+                                        <a target="_blank" href="/generate/act/2/{{ org.id }}" class="inline-flex items-center gap-1.5 bg-white hover:bg-stone-100 border border-stone-200 px-3 py-2 rounded-xl text-sm font-bold shadow-sm transition-all">
+                                            <i class="ph-bold ph-file-text text-[#7a483a]"></i> Акт ФОП
+                                        </a>
+                                    </div>
                                 </li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <!-- Empty State -->
                         <div class="flex-1 flex flex-col items-center justify-center text-center py-6">
-                            <div class="text-[#d8d3c7] mb-4 bg-[#fcfbfa] p-6 rounded-full border border-stone-100/50">
-                                <i class="ph-duotone ph-potted-plant text-5xl"></i>
-                            </div>
-                            <p class="text-stone-400 font-medium leading-relaxed max-w-[220px]">
-                                Організації ще не додані. Створіть їх через бота.
-                            </p>
+                            <p class="text-stone-400 font-medium">Організації ще не додані. Створіть їх через бота в Telegram.</p>
                         </div>
                     {% endif %}
                 </div>
             </div>
 
-            <!-- Card 2: Статуси актів -->
-            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
+            <!-- Статуси актів -->
+            <div class="bg-white rounded-3xl shadow-sm p-8 flex flex-col h-full border border-stone-100">
                 <div class="flex items-center gap-4 mb-6">
                     <div class="bg-[#e4ece8] p-3 rounded-2xl text-[#859c90]">
-                        <i class="ph-duotone ph-clipboard-text text-2xl leading-none"></i>
+                        <i class="ph-duotone ph-clipboard-text text-2xl"></i>
                     </div>
-                    <h3 class="font-bold text-stone-700 text-xl">Статуси актів виконаних робіт</h3>
+                    <h3 class="font-bold text-xl">Статуси актів</h3>
                 </div>
                 
                 <div class="flex-1 flex flex-col">
@@ -104,56 +79,20 @@
                         <ul class="flex flex-col gap-3">
                             {% for act in acts %}
                                 <li class="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-100">
-                                    <span class="font-bold text-stone-700">{{ act.status }}</span>
+                                    <span class="font-bold">{{ act.status }}</span>
                                     <span class="bg-[#f3d8d0] text-[#7a483a] px-3 py-1 rounded-full text-xs font-bold">{{ act.count }} шт.</span>
                                 </li>
                             {% endfor %}
                         </ul>
                     {% else %}
-                        <!-- Empty State -->
                         <div class="flex-1 flex flex-col items-center justify-center text-center py-6">
-                            <div class="text-[#ced8d3] mb-4 bg-[#fcfbfa] p-6 rounded-full border border-stone-100/50">
-                                <i class="ph-duotone ph-coffee text-5xl"></i>
-                            </div>
-                            <p class="text-stone-400 font-medium leading-relaxed max-w-[220px]">
-                                Актів у базі поки немає.
-                            </p>
+                            <p class="text-stone-400 font-medium">Актів у базі поки немає.</p>
                         </div>
                     {% endif %}
                 </div>
             </div>
 
-            <!-- Card 3: Дії та Документи -->
-            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
-                <div class="flex items-center gap-4 mb-6">
-                    <div class="bg-[#f2e6e3] p-3 rounded-2xl text-[#b58f88]">
-                        <i class="ph-duotone ph-folder-open text-2xl leading-none"></i>
-                    </div>
-                    <h3 class="font-bold text-stone-700 text-xl">Дії та Документи</h3>
-                </div>
-                
-                <div class="flex-1 flex flex-col">
-                    <p class="text-stone-400 font-medium mb-8 leading-relaxed">
-                        Генерація документів за вашими шаблонами (тестові ID):
-                    </p>
-                    
-                    <!-- Action Buttons as Links -->
-                    <div class="mt-auto flex flex-col gap-4">
-                        <a href="/generate/appeal/1" class="w-full inline-flex justify-center items-center gap-2 bg-[#c7e3d6] hover:bg-[#b8d6c7] text-stone-700 px-6 py-3.5 rounded-full font-bold transition-all shadow-sm active:scale-95 focus:outline-none focus:ring-4 focus:ring-[#e4f1eb] text-center">
-                            <i class="ph-bold ph-paper-plane-tilt text-lg"></i>
-                            Звернення до Мера (ОСББ ID 1)
-                        </a>
-                        
-                        <a href="/generate/act/2/1" class="w-full inline-flex justify-center items-center gap-2 bg-[#f3d8d0] hover:bg-[#eac4b9] text-stone-700 px-6 py-3.5 rounded-full font-bold transition-all shadow-sm active:scale-95 focus:outline-none focus:ring-4 focus:ring-[#faebe7] text-center">
-                            <i class="ph-bold ph-file-text text-lg"></i>
-                            Акт (ФОП ID 2 -> ОСББ ID 1)
-                        </a>
-                    </div>
-                </div>
-            </div>
-
         </div>
     </main>
-
 </body>
 </html>
