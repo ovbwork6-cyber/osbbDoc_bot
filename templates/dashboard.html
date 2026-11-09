@@ -3,136 +3,157 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Адмін Панель - Мої ОСББ</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #1f2937; margin: 0; padding: 20px; }
-        .header { background-color: #1f2937; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { margin: 0; font-size: 24px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .card h2 { margin-top: 0; font-size: 18px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
-        ul { list-style: none; padding: 0; margin: 0; }
-        li { padding: 10px 0; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; }
-        li:last-child { border-bottom: none; }
-        .badge { background: #3b82f6; color: white; padding: 4px 8px; border-radius: 12px; font-size: 12px; }
-        .btn { background: #10b981; color: white; padding: 10px 15px; text-decoration: none; border-radius: 6px; display: inline-block; margin-top: 15px; }
-        .btn:hover { background: #059669; }
-    </style>
+    <title>Управління будинками ОСББ (Вараш)</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts: Nunito -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Nunito', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
 </head>
-<body>
+<body class="bg-[#faf9f6] font-sans text-stone-700 antialiased min-h-screen flex flex-col">
 
-    <div class="header">
-        <h1>📊 CRM Система ОСББ (Вараш)</h1>
-        <span>Вітаємо в системі управління!</span>
-    </div>
-
-    <div class="grid">
-        <!-- Блок з організаціями -->
-        <div class="card">
-            <h2>🏢 Мої ОСББ / ОК</h2>
-            <ul>
-                {% for org in organizations %}
-                    <li>
-                        <span><b>{{ org.name }}</b> (Квартир: {{ org.apartment_count }})</span>
-                        <span class="badge">Активно</span>
-                    </li>
-                {% else %}
-                    <li>Організації ще не додані. Створіть їх через бота.</li>
-                {% endfor %}
-            </ul>
+    <!-- Header / Navigation -->
+    <header class="bg-[#dce8d6] text-stone-700 shadow-sm sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+            <!-- Logo area -->
+            <div class="flex items-center gap-3">
+                <div class="bg-white/50 p-2.5 rounded-2xl backdrop-blur-sm">
+                    <i class="ph-duotone ph-house-line text-2xl leading-none"></i>
+                </div>
+                <h1 class="text-xl sm:text-2xl font-bold tracking-wide">
+                    Управління будинками ОСББ (Вараш)
+                </h1>
+            </div>
+            
+            <!-- User / Welcome area -->
+            <div class="hidden sm:flex items-center gap-2 bg-white/50 px-4 py-2 rounded-full backdrop-blur-sm">
+                <i class="ph-duotone ph-hand-waving text-xl"></i>
+                <span class="text-sm font-semibold tracking-wide">Вітаємо вдома, В.П.!</span>
+            </div>
         </div>
+    </header>
 
-        <!-- Блок зі статистикою актів -->
-        <div class="card">
-            <h2>📄 Статуси актів виконаних робіт</h2>
-            <ul>
-                {% for act in acts %}
-                    <li>
-                        <span>{{ act.status }}</span>
-                        <span class="badge" style="background-color: #f59e0b;">{{ act.count }} шт.</span>
-                    </li>
-                {% else %}
-                    <li>Актів у базі поки немає.</li>
-                {% endfor %}
-            </ul>
-        </div>
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full flex-grow">
         
-        <!-- Швидкі дії -->
-        <div class="card">
-            <h2>⚡ Дії та Документи</h2>
-            <p>Тут з'явиться генерація документів за вашими шаблонами.</p>
-            <!DOCTYPE html>
-<html lang="uk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Адмін Панель - Мої ОСББ</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #1f2937; margin: 0; padding: 20px; }
-        .header { background-color: #1f2937; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { margin: 0; font-size: 24px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .card h2 { margin-top: 0; font-size: 18px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
-        ul { list-style: none; padding: 0; margin: 0; }
-        li { padding: 10px 0; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; }
-        li:last-child { border-bottom: none; }
-        .badge { background: #3b82f6; color: white; padding: 4px 8px; border-radius: 12px; font-size: 12px; }
-        .btn { background: #10b981; color: white; padding: 10px 15px; text-decoration: none; border-radius: 6px; display: inline-block; margin-top: 15px; }
-        .btn:hover { background: #059669; }
-    </style>
-</head>
-<body>
+        <!-- Dashboard Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            
+            <!-- Card 1: Мої ОСББ / ОК -->
+            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
+                <div class="flex items-center gap-4 mb-6">
+                    <div class="bg-[#f2efe9] p-3 rounded-2xl text-[#aa9d83]">
+                        <i class="ph-duotone ph-buildings text-2xl leading-none"></i>
+                    </div>
+                    <h3 class="font-bold text-stone-700 text-xl">Мої ОСББ / ОК</h3>
+                </div>
+                
+                <div class="flex-1 flex flex-col">
+                    {% if organizations %}
+                        <ul class="flex flex-col gap-3">
+                            {% for org in organizations %}
+                                <li class="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-100">
+                                    <span class="font-bold text-stone-700">{{ org.name }} <span class="font-normal text-sm text-stone-400 ml-1">(Квартир: {{ org.apartment_count }})</span></span>
+                                    <span class="bg-[#c7e3d6] text-[#2c5240] px-3 py-1 rounded-full text-xs font-bold">Активно</span>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <!-- Empty State -->
+                        <div class="flex-1 flex flex-col items-center justify-center text-center py-6">
+                            <div class="text-[#d8d3c7] mb-4 bg-[#fcfbfa] p-6 rounded-full border border-stone-100/50">
+                                <i class="ph-duotone ph-potted-plant text-5xl"></i>
+                            </div>
+                            <p class="text-stone-400 font-medium leading-relaxed max-w-[220px]">
+                                Організації ще не додані. Створіть їх через бота.
+                            </p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
 
-    <div class="header">
-        <h1>📊 CRM Система ОСББ (Вараш)</h1>
-        <span>Вітаємо в системі управління!</span>
-    </div>
+            <!-- Card 2: Статуси актів -->
+            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
+                <div class="flex items-center gap-4 mb-6">
+                    <div class="bg-[#e4ece8] p-3 rounded-2xl text-[#859c90]">
+                        <i class="ph-duotone ph-clipboard-text text-2xl leading-none"></i>
+                    </div>
+                    <h3 class="font-bold text-stone-700 text-xl">Статуси актів виконаних робіт</h3>
+                </div>
+                
+                <div class="flex-1 flex flex-col">
+                    {% if acts %}
+                        <ul class="flex flex-col gap-3">
+                            {% for act in acts %}
+                                <li class="flex items-center justify-between p-4 bg-stone-50 rounded-2xl border border-stone-100">
+                                    <span class="font-bold text-stone-700">{{ act.status }}</span>
+                                    <span class="bg-[#f3d8d0] text-[#7a483a] px-3 py-1 rounded-full text-xs font-bold">{{ act.count }} шт.</span>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <!-- Empty State -->
+                        <div class="flex-1 flex flex-col items-center justify-center text-center py-6">
+                            <div class="text-[#ced8d3] mb-4 bg-[#fcfbfa] p-6 rounded-full border border-stone-100/50">
+                                <i class="ph-duotone ph-coffee text-5xl"></i>
+                            </div>
+                            <p class="text-stone-400 font-medium leading-relaxed max-w-[220px]">
+                                Актів у базі поки немає.
+                            </p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
 
-    <div class="grid">
-        <!-- Блок з організаціями -->
-        <div class="card">
-            <h2>🏢 Мої ОСББ / ОК</h2>
-            <ul>
-                {% for org in organizations %}
-                    <li>
-                        <span><b>{{ org.name }}</b> (Квартир: {{ org.apartment_count }})</span>
-                        <span class="badge">Активно</span>
-                    </li>
-                {% else %}
-                    <li>Організації ще не додані. Створіть їх через бота.</li>
-                {% endfor %}
-            </ul>
-        </div>
+            <!-- Card 3: Дії та Документи -->
+            <div class="bg-white rounded-3xl shadow-sm shadow-stone-200/50 hover:shadow-md transition-shadow duration-300 p-8 flex flex-col h-full border border-stone-100">
+                <div class="flex items-center gap-4 mb-6">
+                    <div class="bg-[#f2e6e3] p-3 rounded-2xl text-[#b58f88]">
+                        <i class="ph-duotone ph-folder-open text-2xl leading-none"></i>
+                    </div>
+                    <h3 class="font-bold text-stone-700 text-xl">Дії та Документи</h3>
+                </div>
+                
+                <div class="flex-1 flex flex-col">
+                    <p class="text-stone-400 font-medium mb-8 leading-relaxed">
+                        Генерація документів за вашими шаблонами (тестові ID):
+                    </p>
+                    
+                    <!-- Action Buttons as Links -->
+                    <div class="mt-auto flex flex-col gap-4">
+                        <a href="/generate/appeal/1" class="w-full inline-flex justify-center items-center gap-2 bg-[#c7e3d6] hover:bg-[#b8d6c7] text-stone-700 px-6 py-3.5 rounded-full font-bold transition-all shadow-sm active:scale-95 focus:outline-none focus:ring-4 focus:ring-[#e4f1eb] text-center">
+                            <i class="ph-bold ph-paper-plane-tilt text-lg"></i>
+                            Звернення до Мера (ОСББ ID 1)
+                        </a>
+                        
+                        <a href="/generate/act/2/1" class="w-full inline-flex justify-center items-center gap-2 bg-[#f3d8d0] hover:bg-[#eac4b9] text-stone-700 px-6 py-3.5 rounded-full font-bold transition-all shadow-sm active:scale-95 focus:outline-none focus:ring-4 focus:ring-[#faebe7] text-center">
+                            <i class="ph-bold ph-file-text text-lg"></i>
+                            Акт (ФОП ID 2 -> ОСББ ID 1)
+                        </a>
+                    </div>
+                </div>
+            </div>
 
-        <!-- Блок зі статистикою актів -->
-        <div class="card">
-            <h2>📄 Статуси актів виконаних робіт</h2>
-            <ul>
-                {% for act in acts %}
-                    <li>
-                        <span>{{ act.status }}</span>
-                        <span class="badge" style="background-color: #f59e0b;">{{ act.count }} шт.</span>
-                    </li>
-                {% else %}
-                    <li>Актів у базі поки немає.</li>
-                {% endfor %}
-            </ul>
         </div>
-        
-        <!-- Швидкі дії -->
-       <div class="card">
-            <h2>⚡ Дії та Документи</h2>
-            <p>Генерація документів за вашими шаблонами (тестові ID):</p>
-            <a href="/generate/appeal/1" class="btn">📝 Заява, характеристика, довідка (ОСББ ID 1)</a>
-            <a href="/generate/act/2/1" class="btn" style="background: #3b82f6;">🧾 Акт (ФОП ID 2 -> ОСББ ID 1)
-        </div>
-    </div>
-
-</body>
-</html>
-        </div>
-    </div>
+    </main>
 
 </body>
 </html>
