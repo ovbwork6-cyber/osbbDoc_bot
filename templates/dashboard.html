@@ -61,8 +61,76 @@
         <div class="card">
             <h2>⚡ Дії та Документи</h2>
             <p>Тут з'явиться генерація документів за вашими шаблонами.</p>
-            <a href="#" class="btn">📝 Сформувати звернення до Мера</a>
-            <a href="#" class="btn">🧾 Згенерувати Акт ФОП</a>
+            <!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Адмін Панель - Мої ОСББ</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; color: #1f2937; margin: 0; padding: 20px; }
+        .header { background-color: #1f2937; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { margin-top: 0; font-size: 18px; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+        ul { list-style: none; padding: 0; margin: 0; }
+        li { padding: 10px 0; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; }
+        li:last-child { border-bottom: none; }
+        .badge { background: #3b82f6; color: white; padding: 4px 8px; border-radius: 12px; font-size: 12px; }
+        .btn { background: #10b981; color: white; padding: 10px 15px; text-decoration: none; border-radius: 6px; display: inline-block; margin-top: 15px; }
+        .btn:hover { background: #059669; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>📊 CRM Система ОСББ (Вараш)</h1>
+        <span>Вітаємо в системі управління!</span>
+    </div>
+
+    <div class="grid">
+        <!-- Блок з організаціями -->
+        <div class="card">
+            <h2>🏢 Мої ОСББ / ОК</h2>
+            <ul>
+                {% for org in organizations %}
+                    <li>
+                        <span><b>{{ org.name }}</b> (Квартир: {{ org.apartment_count }})</span>
+                        <span class="badge">Активно</span>
+                    </li>
+                {% else %}
+                    <li>Організації ще не додані. Створіть їх через бота.</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <!-- Блок зі статистикою актів -->
+        <div class="card">
+            <h2>📄 Статуси актів виконаних робіт</h2>
+            <ul>
+                {% for act in acts %}
+                    <li>
+                        <span>{{ act.status }}</span>
+                        <span class="badge" style="background-color: #f59e0b;">{{ act.count }} шт.</span>
+                    </li>
+                {% else %}
+                    <li>Актів у базі поки немає.</li>
+                {% endfor %}
+            </ul>
+        </div>
+        
+        <!-- Швидкі дії -->
+       <div class="card">
+            <h2>⚡ Дії та Документи</h2>
+            <p>Генерація документів за вашими шаблонами (тестові ID):</p>
+            <a href="/generate/appeal/1" class="btn">📝 Заява, характеристика, довідка (ОСББ ID 1)</a>
+            <a href="/generate/act/2/1" class="btn" style="background: #3b82f6;">🧾 Акт (ФОП ID 2 -> ОСББ ID 1)
+        </div>
+    </div>
+
+</body>
+</html>
         </div>
     </div>
 

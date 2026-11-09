@@ -18,11 +18,13 @@ _WRITE_LOCK = asyncio.Lock()
 
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level="DEFERRED")
+    # check_same_thread=False додано для багатопотокового FastAPI
+    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level="DEFERRED", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -331,7 +333,15 @@ def init_db_sync(superadmin_id: int | None = None) -> None:
             "completed_at": "TEXT",
         })
         _add_columns(conn, "salaries", {"paid_at": "TEXT", "target_type": "TEXT NOT NULL DEFAULT 'organization'"})
-        _add_columns(conn, "organizations", {"meters_enabled": "INTEGER NOT NULL DEFAULT 1"})
+        
+        # Додано нові колонки реквізитів для всіх організацій (ОСББ і ФОП)
+        _add_columns(conn, "organizations", {
+            "meters_enabled": "INTEGER NOT NULL DEFAULT 1",
+            "address": "TEXT NOT NULL DEFAULT ''",
+            "edrpou": "TEXT NOT NULL DEFAULT ''",
+            "head_name": "TEXT NOT NULL DEFAULT ''",
+            "iban": "TEXT NOT NULL DEFAULT ''"
+        })
 
         conn.executescript(
             """
