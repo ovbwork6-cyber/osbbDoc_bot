@@ -387,6 +387,119 @@ async def act_finish(cb: CallbackQuery) -> None:
     await act_list_current(cb)
 
 
+# --- МОДУЛЬ ЧЕКІВ ОСББ / ФОП ---
+@dp.callback_query(F.data == "ws_docs")
+async def workspace_docs_menu(cb: CallbackQuery) -> None:
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Додати фото чеку", callback_data="check_start_create")],
+            [InlineKeyboardButton(text="🧾 Поточні чеки", callback_data="check_list_current")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_workspace")]
+        ]
+    )
+    await cb.message.edit_text("🧾 <b>Керування чеками та витратами:</b>", reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "check_start_create")
+async def check_start_create(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    allowed = user_allowed_osbbs(cb.from_user.id)
+    rows = [[InlineKeyboardButton(text=org, callback_data=f"check_osbb_{org}")] for org in allowed]
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="ws_docs")])
+    
+    await cb.message.edit_text("🧾 Оберіть ОСББ або ОК, до якого відноситься чек:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("check_osbb_"))
+async def check_got_osbb(cb: CallbackQuery, state: FSMContext) -> None:
+    osbb = cb.data.replace("check_osbb_", "")
+    await state.update_data(osbb=osbb)
+    await state.set_state(CheckCreateForm.purpose)
+    
+    await cb.message.edit_text(f"ОСББ/ОК: <b>{osbb}</b>\n\n📝 Введіть короткий опис / ціль (наприклад: <i>«Придбання лампочок для під'їзду, січень»</i>):", parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(CheckCreateForm.purpose)
+async def check_got_purpose(m: types.Message, state: FSMContext) -> None:
+    await state.update_data(purpose=m.text.strip())
+    await state.set_state(CheckCreateForm.file)
+    
+    await m.answer("📷 Надішліть фото чеку або документа:")
+
+
+@dp.message(CheckCreateForm.file, F.photo)
+async def check_save_with_photo(m: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    file_id = m.photo[-1].file_id
+    
+    await db_execute(
+        "INSERT INTO docs (name, osbb, file_id, status, purpose, created_at) VALUES (?, ?, ?, ?, ?, date('now'))",
+        ("Чек витрат", data["osbb"], file_id, "Не отримано", data["purpose"])
+    )
+    await state.clear()
+    await m.answer("✅ Чек успішно додано! Бухгалтер зможе опрацювати його в робочому середовищі.")
+
+
+@dp.callback_query(F.data == "check_list_current")
+async def check_list_current(cb: CallbackQuery) -> None:
+    checks = await db_fetch_all("SELECT id, osbb, purpose, status FROM docs WHERE status != 'Опрацьовано'")
+    if not checks:
+        return await cb.message.edit_text("📭 Поточних неопрацьованих чеків немає.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="ws_docs")]]))
+    
+    text = "🧾 <b>Поточні чеки (витрати):</b>\n\n"
+    rows = []
+    for c in checks:
+        text += f"• [{c['osbb']}] {c['purpose']} | Статус: <b>{c['status']}</b>\n"
+        rows.append([InlineKeyboardButton(text=f"Опрацювати чек #{c['id']}", callback_data=f"check_view_{c['id']}")])
+    
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="ws_docs")])
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("check_view_"))
+async def check_view_details(cb: CallbackQuery) -> None:
+    check_id = int(cb.data.replace("check_view_", ""))
+    chk = await db_fetch_one("SELECT * FROM docs WHERE id = ?", (check_id,))
+    
+    if not chk:
+        return await cb.answer("❌ Чек не знайдено.", show_alert=True)
+        
+    text = (
+        f"🧾 <b>Чек витрат #{chk['id']}</b>\n"
+        f"• <b>ОСББ/ОК:</b> {chk['osbb']}\n"
+        f"• <b>Ціль:</b> {chk['purpose']}\n"
+        f"• <b>Статус:</b> {chk['status']}\n"
+    )
+    
+    rows = [
+        [InlineKeyboardButton(text="✅ Опрацьовано (В архів)", callback_data=f"check_done_{check_id}")],
+        [InlineKeyboardButton(text="🔙 Назад до чеків", callback_data="check_list_current")]
+    ]
+    
+    if chk["file_id"]:
+        try:
+            await cb.message.answer_photo(chk["file_id"], caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+            await cb.message.delete()
+            return
+        except Exception:
+            pass
+            
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("check_done_"))
+async def check_mark_done(cb: CallbackQuery) -> None:
+    check_id = int(cb.data.replace("check_done_", ""))
+    await db_execute("UPDATE docs SET status = 'Опрацьовано' WHERE id = ?", (check_id,))
+    await cb.answer("✅ Чек успішно опрацьовано та переведено в архів!", show_alert=True)
+    await check_list_current(cb)
+
+
 # --- ІНШІ БАЗОВІ КНОПКИ МЕНЮ ---
 @dp.callback_query(F.data == "menu_dashboard")
 async def cb_dashboard(cb: CallbackQuery) -> None:
@@ -441,7 +554,7 @@ async def cb_back_to_menu(cb: CallbackQuery) -> None:
 
 async def main() -> None:
     await db_init()
-    logger.info("Bot started successfully with full act cycle & payments.")
+    logger.info("Bot started successfully with acts, payments & checks.")
     await dp.start_polling(bot)
 
 
