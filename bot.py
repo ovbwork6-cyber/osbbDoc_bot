@@ -82,7 +82,7 @@ def chairman_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="📝 Написати документ", callback_data="menu_documents"),
-                InlineKeyboardButton(text="🌐 Веб-панель", web_app=WebAppInfo(url="http://104.248.21.75:8000")),
+                InlineKeyboardButton(text="🌐 Веб-панель", web_app=WebAppInfo(url="https://104.248.21.75:8000")),
             ],
             [InlineKeyboardButton(text="🔐 Режим Superadmin", callback_data="menu_superadmin")],
         ]
@@ -99,7 +99,7 @@ def admin_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="📝 Написати документ", callback_data="menu_documents"),
-                InlineKeyboardButton(text="🌐 Веб-панель", web_app=WebAppInfo(url="http://104.248.21.75:8000")),
+                InlineKeyboardButton(text="🌐 Веб-панель", web_app=WebAppInfo(url="https://104.248.21.75:8000")),
             ],
         ]
     )
