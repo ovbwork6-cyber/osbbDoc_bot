@@ -34,7 +34,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 
-# --- FSM СТАНИ ДЛЯ АКТІВ ТА ЧЕКІВ ---
+# --- FSM СТАНИ ДЛЯ АКТІВ, ЧЕКІВ ТА МЕШКАНЦІВ ---
 class ActCreateForm(StatesGroup):
     number = State()
     osbb = State()
@@ -52,6 +52,15 @@ class CheckCreateForm(StatesGroup):
     osbb = State()
     purpose = State()
     file = State()
+
+
+class ResidentAuthForm(StatesGroup):
+    key = State()
+
+
+class MeterSubmitForm(StatesGroup):
+    value = State()
+    photo = State()
 
 
 async def answer_forbidden(target: CallbackQuery | types.Message):
@@ -500,6 +509,138 @@ async def check_mark_done(cb: CallbackQuery) -> None:
     await check_list_current(cb)
 
 
+# --- МОДУЛЬ «МЕШКАНЦІ ТА БУДИНКИ» (АДМІН) ТА КАБІНЕТ МЕШКАНЦЯ ---
+@dp.callback_query(F.data == "menu_residents")
+async def cb_residents(cb: CallbackQuery) -> None:
+    if not user_allowed_osbbs(cb.from_user.id) and not is_chairman(cb.from_user.id):
+        return await answer_forbidden(cb)
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏘️ Список квартир та будинків", callback_data="res_list_apts")],
+            [InlineKeyboardButton(text="🔑 Згенерувати тестовий ключ", callback_data="res_add_test_apt")],
+            [InlineKeyboardButton(text="🔙 Назад у меню", callback_data="main_menu_back")]
+        ]
+    )
+    await cb.message.edit_text("🏘️ <b>Модуль «Мешканці та будинки»:</b>", reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "res_list_apts")
+async def res_list_apts(cb: CallbackQuery) -> None:
+    apts = await db_fetch_all("SELECT * FROM apartments")
+    if not apts:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Додати тестову квартиру", callback_data="res_add_test_apt")],
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_residents")]
+            ]
+        )
+        return await cb.message.edit_text("📭 У базі поки немає зареєстрованих квартир чи таунхаусів.", reply_markup=kb)
+    
+    text = "🏘️ <b>Список квартир/таунів:</b>\n\n"
+    for a in apts:
+        text += f"• [{a['osbb']}] Кв. №{a['apt_number']} | Рахунок: {a['account_number']} | Мешканців: {a['residents_count']}\n  🔑 Ключ: <code>{a['access_key']}</code>\n\n"
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Додати квартиру", callback_data="res_add_test_apt")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="menu_residents")]
+        ]
+    )
+    await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "res_add_test_apt")
+async def res_add_test_apt(cb: CallbackQuery) -> None:
+    import random
+    test_key = f"key_{random.randint(1000, 9999)}"
+    allowed = user_allowed_osbbs(cb.from_user.id)
+    osbb_name = allowed[0] if allowed else "ВП-16"
+    
+    await db_execute(
+        "INSERT INTO apartments (osbb, apt_number, account_number, residents_count, access_key, meters_config) VALUES (?, ?, ?, ?, ?, ?)",
+        (osbb_name, "13", "РХ-10013", 2, test_key, "ХВП,ГВП,Опалення,Електроенергія")
+    )
+    await cb.answer(f"✅ Додано квартиру з ключем: {test_key}", show_alert=True)
+    await res_list_apts(cb)
+
+
+@dp.message(Command("cabinet"))
+async def cmd_cabinet(m: types.Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(ResidentAuthForm.key)
+    await m.answer("🔑 Введіть ваш унікальний ключ доступу до кабінету квартири:")
+
+
+@dp.message(ResidentAuthForm.key)
+async def resident_auth_process(m: types.Message, state: FSMContext) -> None:
+    key = m.text.strip()
+    apt = await db_fetch_one("SELECT * FROM apartments WHERE access_key = ?", (key,))
+    
+    if not apt:
+        await state.clear()
+        return await m.answer("❌ Невірний ключ доступу. Зверніться до адміністратора.")
+        
+    await state.update_data(apt_id=apt["id"])
+    await state.clear()
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Подати показники лічильників", callback_data="res_sub_meters")],
+            [InlineKeyboardButton(text="👥 Оскаржити кількість проживаючих", callback_data="res_dispute_residents")]
+        ]
+    )
+    
+    text = (
+        f"🏠 <b>Кабінет мешканця</b>\n\n"
+        f"• <b>ОСББ / ОК:</b> {apt['osbb']}\n"
+        f"• <b>Квартира №:</b> {apt['apt_number']}\n"
+        f"• <b>Особовий рахунок:</b> {apt['account_number']}\n"
+        f"• <b>Кількість проживаючих:</b> {apt['residents_count']}\n\n"
+        f"⚠️ <i>Не забудьте подати показники до 28 числа!</i>"
+    )
+    await m.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "res_sub_meters")
+async def res_sub_meters_start(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(MeterSubmitForm.value)
+    await cb.message.answer("✍️ Введіть поточні показники лічильників цифрами:")
+    await cb.answer()
+
+
+@dp.message(MeterSubmitForm.value)
+async def res_meter_got_value(m: types.Message, state: FSMContext) -> None:
+    val = m.text.strip()
+    await state.update_data(meter_val=val)
+    await state.set_state(MeterSubmitForm.photo)
+    await m.answer("📷 Надішліть фото лічильників для підтвердження:")
+
+
+@dp.message(MeterSubmitForm.photo, F.photo)
+async def res_meter_got_photo(m: types.Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    photo_id = m.photo[-1].file_id
+    
+    await db_execute(
+        "INSERT INTO meter_readings (apt_id, month_year, meter_type, value, photo_id, status, created_at) VALUES (?, strftime('%m.%Y', 'now'), ?, ?, ?, 'На перевірці', date('now'))",
+        (data.get("apt_id", 1), "Усі лічильники", data["meter_val"], photo_id)
+    )
+    await state.clear()
+    await m.answer("✅ Показники та фото надіслані адміністратору на перевірку!")
+
+
+@dp.callback_query(F.data == "res_dispute_residents")
+async def res_dispute_residents(cb: CallbackQuery) -> None:
+    try:
+        await bot.send_message(CHAIRMAN_ID, "⚠️ <b>Увага!</b> Мешканець надіслав запит на оскарження кількості проживаючих.", parse_mode="HTML")
+    except Exception:
+        pass
+    await cb.answer("✅ Запит на оскарження надіслано голові правління!", show_alert=True)
+
+
 # --- ІНШІ БАЗОВІ КНОПКИ МЕНЮ ---
 @dp.callback_query(F.data == "menu_dashboard")
 async def cb_dashboard(cb: CallbackQuery) -> None:
@@ -513,14 +654,6 @@ async def cb_dashboard(cb: CallbackQuery) -> None:
         "• <b>ОКПТ:</b> Активних актів: 0 | Чеки: 0\n"
     )
     await cb.message.answer(text, parse_mode="HTML")
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "menu_residents")
-async def cb_residents(cb: CallbackQuery) -> None:
-    if not user_allowed_osbbs(cb.from_user.id) and not is_chairman(cb.from_user.id):
-        return await answer_forbidden(cb)
-    await cb.message.answer("🏘️ Модуль «Мешканці та будинки» в процесі розробки.", parse_mode="HTML")
     await cb.answer()
 
 
@@ -554,7 +687,7 @@ async def cb_back_to_menu(cb: CallbackQuery) -> None:
 
 async def main() -> None:
     await db_init()
-    logger.info("Bot started successfully with acts, payments & checks.")
+    logger.info("Bot started successfully with all modules including residents & meters.")
     await dp.start_polling(bot)
 
 
