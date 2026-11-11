@@ -10,31 +10,48 @@ templates = Jinja2Templates(directory="templates")
 DB_PATH = os.getenv("OSBB_DB_PATH", "osbb_acts.db")
 
 
-def get_db_stats():
-    """Збирає базову статистику для відображення на веб-панелі."""
+def get_dashboard_data():
+    """Витягує дані про організації (ОСББ/ОК) та зведені статуси актів із бази даних."""
     if not os.path.exists(DB_PATH):
-        return {"acts_in_progress": 0, "acts_completed": 0, "osbb_count": 4}
+        return [], []
     
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        cur_in_prog = conn.execute("SELECT count(*) FROM acts WHERE status NOT IN ('Завершено!', 'Роботу завершено')").fetchone()[0]
-        cur_comp = conn.execute("SELECT count(*) FROM acts WHERE status IN ('Завершено!', 'Роботу завершено')").fetchone()[0]
-        return {
-            "acts_in_progress": cur_in_prog,
-            "acts_completed": cur_comp,
-            "osbb_count": 4  # ВП-16, ВЮ3, Е21, ОКПТ
-        }
+        # Отримуємо список ОСББ/ОК (якщо у вас є окрема таблиця для них, або беремо унікальні з актів/квартир)
+        # Примітка: якщо таблиця організацій називається інакше, змініть запит під вашу структуру
+        organizations = []
+        try:
+            cur_orgs = conn.execute("SELECT id, name, apartment_count FROM organizations").fetchall()
+            organizations = [dict(row) for row in cur_orgs]
+        except Exception:
+            # Запасний варіант, якщо таблиці організацій ще немає — витягуємо унікальні ОСББ із табл. acts або apartments
+            try:
+                cur_osbb = conn.execute("SELECT DISTINCT osbb FROM acts").fetchall()
+                organizations = [{"id": i+1, "name": row["osbb"], "apartment_count": 0} for i, row in enumerate(cur_osbb)]
+            except Exception:
+                organizations = []
+
+        # Збираємо статуси актів та їх кількість
+        acts = []
+        try:
+            cur_acts = conn.execute("SELECT status, count(*) as count FROM acts GROUP BY status").fetchall()
+            acts = [dict(row) for row in cur_acts]
+        except Exception:
+            acts = []
+
+        return organizations, acts
     except Exception:
-        return {"acts_in_progress": 0, "acts_completed": 0, "osbb_count": 4}
+        return [], []
     finally:
         conn.close()
 
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    stats = get_db_stats()
+    organizations, acts = get_dashboard_data()
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
-        "stats": stats
+        "organizations": organizations,
+        "acts": acts
     })
