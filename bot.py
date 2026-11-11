@@ -217,7 +217,7 @@ async def act_got_descr(m: types.Message, state: FSMContext) -> None:
     await state.set_state(ActCreateForm.file)
     
     kb = InlineKeyboardMarkup(
-        inline_keyword=[[InlineKeyboardButton(text="💾 Зберегти без фото", callback_data="act_save_nofile")]]
+        inline_keyboard=[[InlineKeyboardButton(text="💾 Зберегти без фото", callback_data="act_save_nofile")]]
     )
     await m.answer("📷 Надішліть фото акту (або натисніть кнопку нижче, щоб зберегти без фото):", reply_markup=kb)
 
@@ -261,6 +261,130 @@ async def act_list_current(cb: CallbackQuery) -> None:
     rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="ws_acts")])
     await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     await cb.answer()
+
+
+# --- ПРИЙНЯТТЯ ТА ОПЛАТА АКТІВ БУХГАЛТЕРОМ ---
+@dp.callback_query(F.data.startswith("act_view_"))
+async def act_view_details(cb: CallbackQuery) -> None:
+    act_id = int(cb.data.replace("act_view_", ""))
+    act = await db_fetch_one("SELECT * FROM acts WHERE id = ?", (act_id,))
+    
+    if not act:
+        return await cb.answer("❌ Акт не знайдено.", show_alert=True)
+    
+    status = act["status"]
+    amount = act["amount"]
+    paid = act["paid_amount"]
+    
+    text = (
+        f"📄 <b>Акт №{act['number']}</b>\n"
+        f"• <b>ОСББ/ОК:</b> {act['osbb']}\n"
+        f"• <b>Статус:</b> <b>{status}</b>\n"
+        f"• <b>Сума:</b> {amount} грн\n"
+        f"• <b>Оплачено:</b> {paid} грн (Залишок: {amount - paid} грн)\n"
+        f"• <b>Опис:</b> {act['descr']}\n"
+    )
+    
+    rows = []
+    
+    if status == "Не отримано":
+        rows.append([InlineKeyboardButton(text="📥 Прийняти в роботу (Бухгалтер)", callback_data=f"act_acc_{act_id}")])
+        rows.append([InlineKeyboardButton(text="🗑️ Видалити акт (Адмін)", callback_data=f"act_del_{act_id}")])
+    elif status == "В роботі":
+        rows.append([InlineKeyboardButton(text="💳 Внести оплату / Частковий платіж", callback_data=f"act_pay_{act_id}")])
+    elif status in ["Частково оплачено", "Оплачено"]:
+        rows.append([InlineKeyboardButton(text="💳 Додати ще платіж", callback_data=f"act_pay_{act_id}")])
+        rows.append([InlineKeyboardButton(text="🏁 Завершити акт (В архів)", callback_data=f"act_finish_{act_id}")])
+    
+    rows.append([InlineKeyboardButton(text="🔙 Назад до списку", callback_data="act_list_current")])
+    
+    if act["file_id"] and act["file_id"] != "NO_FILE":
+        try:
+            await cb.message.answer_photo(act["file_id"], caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+            await cb.message.delete()
+            return
+        except Exception:
+            pass
+            
+    await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("act_acc_"))
+async def act_accept(cb: CallbackQuery) -> None:
+    act_id = int(cb.data.replace("act_acc_", ""))
+    await db_execute("UPDATE acts SET status = 'В роботі' WHERE id = ?", (act_id,))
+    await cb.answer("✅ Акт прийнято в роботу!", show_alert=True)
+    cb.data = f"act_view_{act_id}"
+    await act_view_details(cb)
+
+
+@dp.callback_query(F.data.startswith("act_del_"))
+async def act_delete(cb: CallbackQuery) -> None:
+    act_id = int(cb.data.replace("act_del_", ""))
+    act = await db_fetch_one("SELECT status FROM acts WHERE id = ?", (act_id,))
+    
+    if act and act["status"] == "Не отримано":
+        await db_execute("DELETE FROM acts WHERE id = ?", (act_id,))
+        await cb.answer("🗑️ Акт успішно видалено.", show_alert=True)
+        await act_list_current(cb)
+    else:
+        await cb.answer("❌ Видалити можна лише акт у статусі «Не отримано».", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("act_pay_"))
+async def act_start_payment(cb: CallbackQuery, state: FSMContext) -> None:
+    act_id = int(cb.data.replace("act_pay_", ""))
+    await state.update_data(payment_act_id=act_id)
+    await state.set_state(ActPaymentForm.payment)
+    await cb.message.answer("💳 Введіть суму платежу, яку оплачує бухгалтер (або повну суму):")
+    await cb.answer()
+
+
+@dp.message(ActPaymentForm.payment)
+async def act_process_payment(m: types.Message, state: FSMContext) -> None:
+    try:
+        pay_amount = float(m.text.strip().replace(",", "."))
+    except ValueError:
+        return await m.answer("❌ Введіть числове значення суми платежу.")
+        
+    data = await state.get_data()
+    act_id = data["payment_act_id"]
+    
+    act = await db_fetch_one("SELECT amount, paid_amount FROM acts WHERE id = ?", (act_id,))
+    if not act:
+        await state.clear()
+        return await m.answer("❌ Акт не знайдено.")
+        
+    new_paid = act["paid_amount"] + pay_amount
+    total_amount = act["amount"]
+    
+    if new_paid >= total_amount:
+        new_status = "Оплачено"
+        new_paid = total_amount
+    else:
+        new_status = "Частково оплачено"
+        
+    await db_execute("UPDATE acts SET paid_amount = ?, status = ? WHERE id = ?", (new_paid, new_status, act_id))
+    await state.clear()
+    
+    await m.answer(f"✅ Платіж на суму {pay_amount} грн успішно зараховано!\nСтатус акту: <b>{new_status}</b> (Оплачено {new_paid} із {total_amount} грн)", parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("act_finish_"))
+async def act_finish(cb: CallbackQuery) -> None:
+    act_id = int(cb.data.replace("act_finish_", ""))
+    act = await db_fetch_one("SELECT file_id FROM acts WHERE id = ?", (act_id,))
+    
+    if not act:
+        return await cb.answer("❌ Акт не знайдено.", show_alert=True)
+        
+    if not act["file_id"] or act["file_id"] == "NO_FILE":
+        return await cb.answer("⚠️ Увага! Перед завершенням акту обов'язково потрібно завантажити фото акту!", show_alert=True)
+        
+    await db_execute("UPDATE acts SET status = 'Завершено!' WHERE id = ?", (act_id,))
+    await cb.answer("🏁 Акт успішно завершено та переведено в архів!", show_alert=True)
+    await act_list_current(cb)
 
 
 # --- ІНШІ БАЗОВІ КНОПКИ МЕНЮ ---
@@ -317,7 +441,7 @@ async def cb_back_to_menu(cb: CallbackQuery) -> None:
 
 async def main() -> None:
     await db_init()
-    logger.info("Bot started successfully with full act cycle.")
+    logger.info("Bot started successfully with full act cycle & payments.")
     await dp.start_polling(bot)
 
 
